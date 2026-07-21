@@ -88,6 +88,7 @@ function! s:OnResumeSession()
     call init#Warn("ClaudeResume: session %s has no usable cwd (%s)", id, cwd)
     return
   endif
+
   quit
   below sp
   enew

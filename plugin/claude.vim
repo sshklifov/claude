@@ -52,15 +52,10 @@ function! s:ClaudeResume(...)
     return
   endif
   let cmd = ['python3', s:script, '--nvim'] + a:000
-  call init#OnJobOutput(cmd, expand('<SID>') .. 'Collect')
+  call init#OnJobOutput(cmd, expand('<SID>') .. 'OnSearchResults')
 endfunction
 
-function! s:Fmt(f)
-  " f = [sid, cwd, ts, role, snippet]
-  return printf('%s  %-30s [%s] %s', a:f[2], a:f[1], a:f[3], a:f[4])
-endfunction
-
-function! s:Collect(data)
+function! s:OnSearchResults(data)
   let rows = filter(copy(a:data), '!empty(v:val)')
   if empty(rows)
     echo "ClaudeResume: no matches"
@@ -68,17 +63,18 @@ function! s:Collect(data)
   endif
   let fields = map(copy(rows), 'split(v:val, "\t", v:true)')
   let fields = filter(fields, 'len(v:val) >= 5')
-  let lines = map(copy(fields), 's:Fmt(v:val)')
+  " f = [sid, cwd, ts, role, snippet]
+  let lines = map(copy(fields), {_, f -> printf('%s  %-30s [%s] %s', f[2], f[1], f[3], f[4])})
   let ids = map(copy(fields), 'v:val[0]')
   let cwds = map(copy(fields), 'v:val[1]')
-  let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:ResumeSelected'))
+  let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:OnResumeSession'))
   if nr >= 0
     call setbufvar(nr, 'resume_ids', ids)
     call setbufvar(nr, 'resume_cwds', cwds)
   endif
 endfunction
 
-function! s:ResumeSelected()
+function! s:OnResumeSession()
   let ids = getbufvar(bufnr(), 'resume_ids', [])
   let cwds = getbufvar(bufnr(), 'resume_cwds', [])
   let idx = line('.') - 1

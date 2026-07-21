@@ -47,7 +47,7 @@ command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-arg
 " :Csearch FooBar rockchip   — substring-search across all session history.
 " All args are ANDed (a message must contain every substring). <CR> on a
 " result resumes that session in a terminal.
-let s:script = expand('~/.claude/csearch.py')
+let s:script = expand('<sfile>:p:h:h') .. '/csearch.py'
 
 " What <CR> does with the selected session id. Change to taste:
 "   resume  — open `claude --resume <id>` in a terminal split (default)

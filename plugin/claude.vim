@@ -53,10 +53,7 @@ highlight default link ClaudeResumeId Comment
 highlight default link ClaudeResumePrompt String
 
 function! s:ClaudeResume(...)
-  if a:0 == 0
-    call init#Warn("ClaudeResume: need at least one substring")
-    return
-  endif
+  " No args: python lists one row per session (see claude_search.py).
   let cmd = ['python3', s:script, '--nvim'] + a:000
   call init#OnJobOutput(cmd, expand('<SID>') .. 'OnSearchResults')
 endfunction
@@ -107,5 +104,5 @@ function! s:OnResumeSession()
   startinsert
 endfunction
 
-command! -nargs=+ ClaudeResume call s:ClaudeResume(<f-args>)
+command! -nargs=* ClaudeResume call s:ClaudeResume(<f-args>)
 " }}}

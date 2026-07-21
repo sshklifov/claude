@@ -46,6 +46,12 @@ command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-arg
 """"""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{
 let s:script = expand('<sfile>:p:h:h') .. '/claude_search.py'
 
+" Field colors for the ClaudeResume quickfix; override these at your leisure.
+highlight default link ClaudeResumeTime Number
+highlight default link ClaudeResumeDir Directory
+highlight default link ClaudeResumeRole Comment
+highlight default link ClaudeResumePrompt String
+
 function! s:ClaudeResume(...)
   if a:0 == 0
     call init#Warn("ClaudeResume: need at least one substring")
@@ -64,7 +70,12 @@ function! s:OnSearchResults(data)
   let fields = map(copy(rows), 'split(v:val, "\t", v:true)')
   let fields = filter(fields, 'len(v:val) >= 5')
   " f = [sid, cwd, ts, role, snippet]
-  let lines = map(copy(fields), {_, f -> printf('%s  %-30s [%s] %s', f[2], f[1], f[3], f[4])})
+  let lines = map(copy(fields), {_, f -> [
+        \ [printf('%-16s  ', f[2]), 'ClaudeResumeTime'],
+        \ [printf('%-30s', f[1]), 'ClaudeResumeDir'],
+        \ [printf(' [%s] ', f[3]), 'ClaudeResumeRole'],
+        \ [f[4], 'ClaudeResumePrompt'],
+        \ ]})
   let ids = map(copy(fields), 'v:val[0]')
   let cwds = map(copy(fields), 'v:val[1]')
   let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:OnResumeSession'))

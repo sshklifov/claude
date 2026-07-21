@@ -7,6 +7,28 @@ Usage: claude_search.py [--nvim] <substring> [substring2 ...]
             sessionid <TAB> cwd <TAB> timestamp <TAB> role <TAB> snippet
 """
 import sys, json, glob, os
+from datetime import date
+
+
+def pretty_ts(ts):
+    """'Today'/'Yesterday'/'Monday' if recent, else '2026-07-21', plus HH:MM."""
+    if not ts:
+        return ""
+    day, clock = ts[:10], ts[11:16]
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        return f"{day} {clock}".strip()
+    diff = (date.today() - d).days
+    if diff == 0:
+        label = "Today"
+    elif diff == 1:
+        label = "Yesterday"
+    elif 2 <= diff <= 7:
+        label = d.strftime("%A")
+    else:
+        label = day
+    return f"{label} {clock}".strip()
 
 args = sys.argv[1:]
 nvim = False
@@ -30,7 +52,7 @@ def text_of(msg):
         return " ".join(str(p) for p in parts)
     return ""
 
-hits = 0
+results = []
 for path in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
     with open(path, errors="replace") as fh:
         for line in fh:
@@ -43,20 +65,24 @@ for path in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
             body = text_of(d.get("message", {}))
             low = body.lower()
             if all(n in low for n in needles):
-                hits += 1
                 role = d.get("message", {}).get("role", "?")
                 cwd = d.get("cwd", "?")
                 branch = d.get("gitBranch", "")
                 sid = d.get("sessionId", os.path.basename(path)[:-6])
                 snippet = " ".join(body.split())
+                ts = d.get("timestamp", "")
                 if nvim:
                     # keep it single-line and tab-safe for the vim parser
-                    ts = d.get("timestamp", "")[:16]
-                    row = "\t".join((sid, cwd, ts, role, snippet[:200]))
-                    print(row.replace("\r", " "))
+                    row = "\t".join((sid, cwd, pretty_ts(ts), role, snippet[:200]))
+                    results.append((ts, row.replace("\r", " ")))
                 else:
-                    ts = d.get("timestamp", "")[:19]
-                    print(f"\033[36m{ts}\033[0m [{role}] \033[33m{cwd}\033[0m ({branch})")
-                    print(f"    resume: claude --resume {sid}")
-                    print(f"    {snippet[:160]}\n")
-print(f"--- {hits} match(es) ---", file=sys.stderr)
+                    row = (f"\033[36m{pretty_ts(ts)}\033[0m [{role}] \033[33m{cwd}\033[0m ({branch})\n"
+                           f"    resume: claude --resume {sid}\n"
+                           f"    {snippet[:160]}\n")
+                    results.append((ts, row))
+
+# newest first, by message timestamp
+results.sort(key=lambda r: r[0], reverse=True)
+for _, row in results:
+    print(row)
+print(f"--- {len(results)} match(es) ---", file=sys.stderr)

@@ -49,7 +49,7 @@ let s:script = expand('<sfile>:p:h:h') .. '/claude_search.py'
 " Field colors for the ClaudeResume quickfix; override these at your leisure.
 highlight default link ClaudeResumeTime Number
 highlight default link ClaudeResumeDir Directory
-highlight default link ClaudeResumeRole Comment
+highlight default link ClaudeResumeId Comment
 highlight default link ClaudeResumePrompt String
 
 function! s:ClaudeResume(...)
@@ -73,7 +73,7 @@ function! s:OnSearchResults(data)
   let lines = map(copy(fields), {_, f -> [
         \ [printf('%-16s  ', f[2]), 'ClaudeResumeTime'],
         \ [printf('%-30s', f[1]), 'ClaudeResumeDir'],
-        \ [printf(' [%s] ', f[3]), 'ClaudeResumeRole'],
+        \ [printf(' [%s] ', f[0][:4]), 'ClaudeResumeId'],
         \ [f[4], 'ClaudeResumePrompt'],
         \ ]})
   let ids = map(copy(fields), 'v:val[0]')

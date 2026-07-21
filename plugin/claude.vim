@@ -44,9 +44,6 @@ command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-arg
 " }}}
 
 """"""""""""""""""""""""""""Claude history search"""""""""""""""""""""""""""" {{{
-" :Csearch FooBar rockchip   — substring-search across all session history.
-" All args are ANDed (a message must contain every substring). <CR> on a
-" result resumes that session in a terminal.
 let s:script = expand('<sfile>:p:h:h') .. '/csearch.py'
 
 " What <CR> does with the selected session id. Change to taste:
@@ -62,11 +59,17 @@ endfunction
 
 function! s:Resume() abort
   let ids = getbufvar(bufnr(), 'csearch_ids', [])
+  let cwds = getbufvar(bufnr(), 'csearch_cwds', [])
   let idx = line('.') - 1
   if idx < 0 || idx >= len(ids)
     return
   endif
   let id = ids[idx]
+  " Resume is scoped to a project dir, so run it in the session's own cwd.
+  let cwd = get(cwds, idx, '')
+  if empty(cwd) || !isdirectory(cwd)
+    let cwd = getcwd()
+  endif
   quit
   if g:csearch_action ==# 'yank'
     let cmd = 'claude --resume ' .. id
@@ -83,7 +86,7 @@ function! s:Resume() abort
   else
     below sp
     enew
-    call init#Termopen(["claude", "--resume", id], #{cwd: getcwd()})
+    call init#Termopen(["claude", "--resume", id], #{cwd: cwd})
     startinsert
   endif
 endfunction
@@ -98,9 +101,11 @@ function! s:Collect(_0, data, _1) abort
   let fields = filter(fields, 'len(v:val) >= 5')
   let lines = map(copy(fields), 's:Fmt(v:val)')
   let ids = map(copy(fields), 'v:val[0]')
+  let cwds = map(copy(fields), 'v:val[1]')
   let nr = qutil#CreateCustomQuickfix(lines, "Csearch", function('s:Resume'))
   if nr >= 0
     call setbufvar(nr, 'csearch_ids', ids)
+    call setbufvar(nr, 'csearch_cwds', cwds)
   endif
 endfunction
 

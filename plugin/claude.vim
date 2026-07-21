@@ -43,7 +43,7 @@ endfunction
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)
 " }}}
 
-""""""""""""""""""""""""""""Claude history search"""""""""""""""""""""""""""" {{{
+""""""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{
 let s:script = expand('<sfile>:p:h:h') .. '/csearch.py'
 
 function! s:Fmt(f) abort
@@ -51,9 +51,9 @@ function! s:Fmt(f) abort
   return printf('%s  %-30s [%s] %s', a:f[2], a:f[1], a:f[3], a:f[4])
 endfunction
 
-function! s:Resume() abort
-  let ids = getbufvar(bufnr(), 'csearch_ids', [])
-  let cwds = getbufvar(bufnr(), 'csearch_cwds', [])
+function! s:ResumeSelected() abort
+  let ids = getbufvar(bufnr(), 'clauderesume_ids', [])
+  let cwds = getbufvar(bufnr(), 'clauderesume_cwds', [])
   let idx = line('.') - 1
   if idx < 0 || idx >= len(ids)
     return
@@ -62,7 +62,7 @@ function! s:Resume() abort
   " Resume is scoped to a project dir, so it must run in the session's own cwd.
   let cwd = get(cwds, idx, '')
   if empty(cwd) || !isdirectory(cwd)
-    call init#Warn("Csearch: session %s has no usable cwd (%s)", id, cwd)
+    call init#Warn("ClaudeResume: session %s has no usable cwd (%s)", id, cwd)
     return
   endif
   quit
@@ -75,7 +75,7 @@ endfunction
 function! s:Collect(_0, data, _1) abort
   let rows = filter(copy(a:data), '!empty(v:val)')
   if empty(rows)
-    echo "Csearch: no matches"
+    echo "ClaudeResume: no matches"
     return
   endif
   let fields = map(copy(rows), 'split(v:val, "\t", v:true)')
@@ -83,21 +83,21 @@ function! s:Collect(_0, data, _1) abort
   let lines = map(copy(fields), 's:Fmt(v:val)')
   let ids = map(copy(fields), 'v:val[0]')
   let cwds = map(copy(fields), 'v:val[1]')
-  let nr = qutil#CreateCustomQuickfix(lines, "Csearch", function('s:Resume'))
+  let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:ResumeSelected'))
   if nr >= 0
-    call setbufvar(nr, 'csearch_ids', ids)
-    call setbufvar(nr, 'csearch_cwds', cwds)
+    call setbufvar(nr, 'clauderesume_ids', ids)
+    call setbufvar(nr, 'clauderesume_cwds', cwds)
   endif
 endfunction
 
-function! s:Csearch(...) abort
+function! s:ClaudeResume(...) abort
   if a:0 == 0
-    call init#Warn("Csearch: need at least one substring")
+    call init#Warn("ClaudeResume: need at least one substring")
     return
   endif
   let cmd = ['python3', s:script, '--nvim'] + a:000
   call init#Jobstart(cmd, #{stdout_buffered: 1, on_stdout: function('s:Collect')})
 endfunction
 
-command! -nargs=+ Csearch call s:Csearch(<f-args>)
+command! -nargs=+ ClaudeResume call s:ClaudeResume(<f-args>)
 " }}}

@@ -44,7 +44,7 @@ command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-arg
 " }}}
 
 """"""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{
-let s:script = expand('<sfile>:p:h:h') .. '/csearch.py'
+let s:script = expand('<sfile>:p:h:h') .. '/claude_search.py'
 
 function! s:Fmt(f) abort
   " f = [sid, cwd, ts, role, snippet]

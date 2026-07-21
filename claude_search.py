@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Substring-search across all Claude Code session history.
 
-Usage: csearch.py [--nvim] <substring> [substring2 ...]
+Usage: claude_search.py [--nvim] <substring> [substring2 ...]
   case-insensitive; ALL substrings must match the same message.
   --nvim  emit machine-readable, tab-separated rows (no ANSI):
             sessionid <TAB> cwd <TAB> timestamp <TAB> role <TAB> snippet
@@ -16,7 +16,7 @@ if args and args[0] == "--nvim":
 
 needles = [n.lower() for n in args]
 if not needles:
-    sys.exit("usage: csearch.py [--nvim] <substring> ...")
+    sys.exit("usage: claude_search.py [--nvim] <substring> ...")
 
 def text_of(msg):
     c = msg.get("content")

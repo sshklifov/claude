@@ -46,12 +46,6 @@ command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-arg
 """"""""""""""""""""""""""""Claude history search"""""""""""""""""""""""""""" {{{
 let s:script = expand('<sfile>:p:h:h') .. '/csearch.py'
 
-" What <CR> does with the selected session id. Change to taste:
-"   resume  — open `claude --resume <id>` in a terminal split (default)
-"   edit    — open the raw .jsonl for that session
-"   yank    — copy `claude --resume <id>` to the unnamed register
-let g:csearch_action = get(g:, 'csearch_action', 'resume')
-
 function! s:Fmt(f) abort
   " f = [sid, cwd, ts, role, snippet]
   return printf('%s  %-30s [%s] %s', a:f[2], a:f[1], a:f[3], a:f[4])
@@ -65,30 +59,17 @@ function! s:Resume() abort
     return
   endif
   let id = ids[idx]
-  " Resume is scoped to a project dir, so run it in the session's own cwd.
+  " Resume is scoped to a project dir, so it must run in the session's own cwd.
   let cwd = get(cwds, idx, '')
   if empty(cwd) || !isdirectory(cwd)
-    let cwd = getcwd()
+    call init#Warn("Csearch: session %s has no usable cwd (%s)", id, cwd)
+    return
   endif
   quit
-  if g:csearch_action ==# 'yank'
-    let cmd = 'claude --resume ' .. id
-    call setreg('"', cmd)
-    echo 'Yanked: ' .. cmd
-  elseif g:csearch_action ==# 'edit'
-    let root = expand('~/.claude/projects')
-    let matches = globpath(root, '*/' .. id .. '.jsonl', v:false, v:true)
-    if empty(matches)
-      call init#Warn("No .jsonl found for session %s", id)
-      return
-    endif
-    exe 'edit ' .. fnameescape(matches[0])
-  else
-    below sp
-    enew
-    call init#Termopen(["claude", "--resume", id], #{cwd: cwd})
-    startinsert
-  endif
+  below sp
+  enew
+  call init#Termopen(["claude", "--resume", id], #{cwd: cwd})
+  startinsert
 endfunction
 
 function! s:Collect(_0, data, _1) abort

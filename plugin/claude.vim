@@ -73,25 +73,16 @@ function! s:OnSearchResults(data)
         \ [printf(' [%s] ', f[0][:4]), 'ClaudeResumeId'],
         \ [f[4], 'ClaudeResumePrompt'],
         \ ]})
-  let ids = map(copy(fields), 'v:val[0]')
-  let cwds = map(copy(fields), 'v:val[1]')
+  let data = map(copy(fields), '#{id: v:val[0], cwd: v:val[1]}')
   let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:OnResumeSession'))
-  if nr >= 0
-    call setbufvar(nr, 'resume_ids', ids)
-    call setbufvar(nr, 'resume_cwds', cwds)
-  endif
+  call qutil#SetLineData(nr, data)
 endfunction
 
 function! s:OnResumeSession()
-  let ids = getbufvar(bufnr(), 'resume_ids', [])
-  let cwds = getbufvar(bufnr(), 'resume_cwds', [])
-  let idx = line('.') - 1
-  if idx < 0 || idx >= len(ids)
-    return
-  endif
-  let id = ids[idx]
+  let entry = qutil#GetLineData()
+  let id = entry.id
   " Resume is scoped to a project dir, so it must run in the session's own cwd.
-  let cwd = get(cwds, idx, '')
+  let cwd = entry.cwd
   if empty(cwd) || !isdirectory(cwd)
     call init#Warn("ClaudeResume: session %s has no usable cwd (%s)", id, cwd)
     return

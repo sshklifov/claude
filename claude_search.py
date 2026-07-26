@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Substring-search across all Claude Code session history.
 
-Usage: claude_search.py [--nvim] [substring ...]
+Usage: claude_search.py [--human-readable] [--path DIR] [substring ...]
   case-insensitive; ALL substrings must match the same message.
   With no substring: list one row per session (first user prompt as the
   snippet), ordered by most-recent activity.
-  --nvim  emit machine-readable, tab-separated rows (no ANSI):
-            sessionid <TAB> cwd <TAB> timestamp <TAB> role <TAB> snippet
+  Default output is machine-readable, tab-separated rows (for the editor):
+    sessionid <TAB> cwd <TAB> timestamp <TAB> role <TAB> snippet
+  --human-readable  pretty, ANSI-colored output instead.
 """
-import sys, json, glob, os
+import sys, json, glob, os, argparse
 from datetime import date
 
 
@@ -57,23 +58,33 @@ def messages(path):
                 yield d
 
 
-args = sys.argv[1:]
-nvim = False
-if args and args[0] == "--nvim":
-    nvim = True
-    args = args[1:]
+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument("--human-readable", action="store_true", dest="human",
+                    help="pretty, ANSI-colored output (default is tab-separated for the editor)")
+parser.add_argument("--path", metavar="DIR",
+                    help="only sessions whose cwd is DIR or a subdirectory of it")
+parser.add_argument("needles", nargs="*",
+                    help="case-insensitive substrings; ALL must match the same message")
+opts = parser.parse_args()
 
-needles = [n.lower() for n in args]
+human = opts.human
+path_filter = opts.path
+needles = [n.lower() for n in opts.needles]
+
+
+def under(cwd, root):
+    """True if cwd is root or a subdirectory of it."""
+    return cwd == root or cwd.startswith(root.rstrip("/") + "/")
 
 
 def make_row(sid, cwd, ts, role, branch, snippet):
     # collapse whitespace so the snippet stays single-line and tab-safe
     snippet = " ".join(snippet.split())
-    if nvim:
-        return "\t".join((sid, cwd, pretty_ts(ts), role, snippet[:200]))
-    return (f"\033[36m{pretty_ts(ts)}\033[0m [{role}] \033[33m{cwd}\033[0m ({branch})\n"
-            f"    resume: claude --resume {sid}\n"
-            f"    {snippet[:160]}\n")
+    if human:
+        return (f"\033[36m{pretty_ts(ts)}\033[0m [{role}] \033[33m{cwd}\033[0m ({branch})\n"
+                f"    resume: claude --resume {sid}\n"
+                f"    {snippet[:160]}\n")
+    return "\t".join((sid, cwd, pretty_ts(ts), role, snippet[:200]))
 
 
 results = []
@@ -84,10 +95,13 @@ if needles:
         for d in messages(path):
             body = text_of(d.get("message", {}))
             if all(n in body.lower() for n in needles):
+                cwd = d.get("cwd", "?")
+                if path_filter and not under(cwd, path_filter):
+                    continue
                 m = d.get("message", {})
                 sid = d.get("sessionId", os.path.basename(path)[:-6])
                 ts = d.get("timestamp", "")
-                row = make_row(sid, d.get("cwd", "?"), ts,
+                row = make_row(sid, cwd, ts,
                                m.get("role", "?"), d.get("gitBranch", ""), body)
                 results.append((ts, row))
 else:
@@ -111,6 +125,8 @@ else:
                 if body:
                     prompt = body
         if sid is None:
+            continue
+        if path_filter and not under(cwd, path_filter):
             continue
         results.append((latest_ts, make_row(
             sid, cwd, latest_ts, "session", branch, prompt or "(no prompt)")))

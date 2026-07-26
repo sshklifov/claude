@@ -4,6 +4,8 @@ if exists(':Claude')
   finish
 endif
 
+let g:claude_executable = expand("~/.local/bin/claude")
+
 """"""""""""""""""""""""""""Claude interactive"""""""""""""""""""""""""""" {{{
 function! s:ClaudeInteractive(args) range
   let root = FugitiveWorkTree()
@@ -36,7 +38,7 @@ function! s:ClaudeInteractive(args) range
 
   below sp
   enew
-  call init#Termopen(["claude", prompt], #{cwd: root})
+  call init#Termopen([g:claude_executable, prompt], #{cwd: root})
   startinsert
 endfunction
 
@@ -52,9 +54,15 @@ highlight default link ClaudeResumeDir Directory
 highlight default link ClaudeResumeId Comment
 highlight default link ClaudeResumePrompt String
 
-function! s:ClaudeResume(...)
+function! s:ClaudeResume(bang, ...)
   " No args: python lists one row per session (see claude_search.py).
-  let cmd = ['python3', s:script, '--nvim'] + a:000
+  let cmd = ['python3', s:script]
+  if !empty(a:bang)
+    " Scope to the current project
+    let root = FugitiveWorkTree()
+    let cmd += ['--path', empty(root) ? getcwd() : root]
+  endif
+  let cmd += a:000
   call init#OnJobOutput(cmd, expand('<SID>') .. 'OnSearchResults')
 endfunction
 
@@ -91,9 +99,9 @@ function! s:OnResumeSession()
   quit
   below sp
   enew
-  call init#Termopen(["claude", "--resume", id], #{cwd: cwd})
+  call init#Termopen([g:claude_executable, "--resume", id], #{cwd: cwd})
   startinsert
 endfunction
 
-command! -nargs=* ClaudeResume call s:ClaudeResume(<f-args>)
+command! -bang -nargs=* ClaudeResume call s:ClaudeResume("<bang>", <f-args>)
 " }}}

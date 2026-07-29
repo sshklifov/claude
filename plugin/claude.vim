@@ -6,6 +6,67 @@ endif
 
 let g:claude_executable = expand("~/.local/bin/claude")
 
+" Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
+function! s:OpenClaudeTerm(args, root)
+  let coding_win = win_getid()
+  below sp
+  enew
+  call init#Termopen([g:claude_executable] + a:args, #{cwd: a:root})
+  let b:root_dir = a:root
+  let b:coding_win = coding_win
+  nnoremap <buffer> <CR> <cmd>call <SID>ClaudeOpenRef()<CR>
+  startinsert
+endfunction
+
+" Line nearest to a:expected_lnum whose trimmed text equals a:text
+function! s:FindSourceLine(expected_lnum, text)
+  let nums = range(1, line('$'))
+  call filter(nums, 'trim(getline(v:val)) ==# a:text')
+  call map(nums, 'v:val - a:expected_lnum')
+  call sort(nums, {x, y -> abs(x) - abs(y)})
+  return empty(nums) ? a:expected_lnum : a:expected_lnum + nums[0]
+endfunction
+
+" In a claude diff/file view, take the gutter line number on the current line
+" and the filename from the nearest tool header above, then open there.
+" (Coupled to the TUI format: `Update(path)` headers + a leading line-number
+" gutter on content lines.)
+function! s:ClaudeOpenRef()
+  let raw = getline('.')
+  let lnum = str2nr(matchstr(raw, '\v^\s*\zs\d+'))
+  if lnum <= 0
+    return init#Warn("ClaudeOpen: no line number on this line")
+  endif
+  " Code on this line (minus gutter number and diff marker) to verify the jump.
+  let text = trim(substitute(raw, '\v^\s*\d+\s*[-+]?', '', ''))
+  let path = ""
+  for i in range(line('.'), 1, -1)
+    let m = matchlist(getline(i), '\v<%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)')
+    if !empty(m)
+      let path = m[1]
+      break
+    endif
+  endfor
+  if empty(path)
+    return init#Warn("ClaudeOpen: no file header found")
+  endif
+  let fullname = path[0] == '/' ? path : b:root_dir .. '/' .. path
+  if !filereadable(fullname)
+    return init#Warn("ClaudeOpen: no such file: %s", fullname)
+  endif
+
+  " Return to the coding window we opened from; recreate it if it's gone.
+  if !win_gotoid(get(b:, 'coding_win', 0))
+    let claude_buf = bufnr()
+    above sp
+    call setbufvar(claude_buf, 'coding_win', win_getid())
+  endif
+  exe 'edit ' .. fnameescape(fullname)
+  let lnum = s:FindSourceLine(lnum, text)
+  exe 'normal ' .. lnum .. 'G'
+  normal z.
+endfunction
+
 """"""""""""""""""""""""""""Claude interactive"""""""""""""""""""""""""""" {{{
 function! s:ClaudeInteractive(args) range
   let root = FugitiveWorkTree()
@@ -36,10 +97,7 @@ function! s:ClaudeInteractive(args) range
     let prompt = printf("%s\n%s", a:args, context)
   endif
 
-  below sp
-  enew
-  call init#Termopen([g:claude_executable, prompt], #{cwd: root})
-  startinsert
+  call s:OpenClaudeTerm([prompt], root)
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)
@@ -97,10 +155,7 @@ function! s:OnResumeSession()
   endif
 
   quit
-  below sp
-  enew
-  call init#Termopen([g:claude_executable, "--resume", id], #{cwd: cwd})
-  startinsert
+  call s:OpenClaudeTerm(["--resume", id], cwd)
 endfunction
 
 command! -bang -nargs=* ClaudeResume call s:ClaudeResume("<bang>", <f-args>)

@@ -50,6 +50,7 @@ function! s:ClaudeOpenRef()
   if empty(path)
     return init#Warn("ClaudeOpen: no file header found")
   endif
+  let path = expand(path)  " resolve a leading ~
   let fullname = path[0] == '/' ? path : b:root_dir .. '/' .. path
   if !filereadable(fullname)
     return init#Warn("ClaudeOpen: no such file: %s", fullname)

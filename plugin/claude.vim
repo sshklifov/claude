@@ -77,7 +77,7 @@ function! s:ClaudeInteractive(args) range
   let filename = expand('%:p')
 
   if empty(a:args)
-    let prompt = '--resume'
+    let prompt = []
   elseif filereadable(filename)
     let marker = ""
     if stridx(filename, root) == 0
@@ -89,16 +89,16 @@ function! s:ClaudeInteractive(args) range
     endif
     let whole_file = a:firstline == 1 && a:lastline == line('$')
     if whole_file
-      let prompt = printf('In %s%s: %s', marker, filename, a:args)
+      let prompt = [printf('In %s%s: %s', marker, filename, a:args)]
     else
-      let prompt = printf('In %s%s lines %d-%d: %s', marker, filename, a:firstline, a:lastline, a:args)
+      let prompt = [printf('In %s%s lines %d-%d: %s', marker, filename, a:firstline, a:lastline, a:args)]
     endif
   else
     let context = join(getline(a:firstline, a:lastline), "\n")
-    let prompt = printf("%s\n%s", a:args, context)
+    let prompt = [printf("%s\n%s", a:args, context)]
   endif
 
-  call s:OpenClaudeTerm([prompt], root)
+  call s:OpenClaudeTerm(prompt, root)
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)

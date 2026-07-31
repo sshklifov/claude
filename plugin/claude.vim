@@ -50,7 +50,7 @@ function! s:ClaudeOpenRef()
   let text = trim(substitute(raw, '\v^\s*\d+\s*[-+]?', '', ''))
   let path = ""
   for i in range(line('.'), 1, -1)
-    let m = matchlist(getline(i), '\v<%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)')
+    let m = matchlist(getline(i), '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)')
     if !empty(m)
       let path = m[1]
       break

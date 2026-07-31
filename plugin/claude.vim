@@ -4,7 +4,16 @@ if exists(':Claude')
   finish
 endif
 
-let g:claude_executable = expand("~/.local/bin/claude")
+function! s:FindClaudeExecutable()
+  let found = ['~/.local/bin/claude', '~/bin/claude',
+        \ '/opt/homebrew/bin/claude', '/home/linuxbrew/.linuxbrew/bin/claude', 'claude']
+  call filter(map(found, 'expand(v:val)'), 'executable(v:val)')
+  return get(found, 0, '')
+endfunction
+
+if !exists('g:claude_executable')
+  let g:claude_executable = s:FindClaudeExecutable()
+endif
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 function! s:OpenClaudeTerm(args, root)

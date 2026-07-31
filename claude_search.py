@@ -10,27 +10,30 @@ Usage: claude_search.py [--human-readable] [--path DIR] [substring ...]
   --human-readable  pretty, ANSI-colored output instead.
 """
 import sys, json, glob, os, argparse
-from datetime import date
+from datetime import date, datetime
 
 
 def pretty_ts(ts):
-    """'Today'/'Yesterday'/'Monday' if recent, else '2026-07-21', plus HH:MM."""
+    """'Today'/'Yesterday'/'Monday' if recent, else '2026-07-21', plus HH:MM.
+
+    Timestamps are stored in UTC; convert to local time for display.
+    """
     if not ts:
         return ""
-    day, clock = ts[:10], ts[11:16]
     try:
-        d = date.fromisoformat(day)
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
     except ValueError:
-        return f"{day} {clock}".strip()
-    diff = (date.today() - d).days
+        return f"{ts[:10]} {ts[11:16]}".strip()
+    clock = dt.strftime("%H:%M")
+    diff = (date.today() - dt.date()).days
     if diff == 0:
         label = "Today"
     elif diff == 1:
         label = "Yesterday"
     elif 2 <= diff <= 7:
-        label = d.strftime("%A")
+        label = dt.strftime("%A")
     else:
-        label = day
+        label = dt.strftime("%Y-%m-%d")
     return f"{label} {clock}".strip()
 
 

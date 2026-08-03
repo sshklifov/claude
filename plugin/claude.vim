@@ -87,6 +87,8 @@ function! s:ClaudeInteractive(args) range
 
   if empty(a:args)
     let prompt = []
+  elseif isdirectory(filename)
+    let prompt = [a:args]
   elseif filereadable(filename)
     let marker = ""
     if stridx(filename, root) == 0

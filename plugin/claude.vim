@@ -24,17 +24,18 @@ function! s:OpenClaudeTerm(args, root)
   let b:root_dir = a:root
   let b:coding_win = coding_win
   nnoremap <buffer> <CR> <cmd>call <SID>ClaudeOpenRef()<CR>
-  nnoremap <buffer> ]p <cmd>call <SID>JumpPrompt(v:count1)<CR>
-  nnoremap <buffer> [p <cmd>call <SID>JumpPrompt(-v:count1)<CR>
-  nnoremap <buffer> [P <cmd>call <SID>JumpPrompt(-line('$'))<CR>
+  nnoremap <buffer> ]p <cmd>call <SID>JumpTo(v:count1, <SID>PromptLines())<CR>
+  nnoremap <buffer> [p <cmd>call <SID>JumpTo(-v:count1, <SID>PromptLines())<CR>
+  nnoremap <buffer> [P <cmd>call <SID>JumpTo(-line('$'), <SID>PromptLines())<CR>
   nnoremap <buffer> ]P <cmd>exe get(map(matchbufline('%','^❯',1,'$'),'v:val.lnum'),-1,'')<CR>
+  nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
+  nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
   startinsert
 endfunction
 
-" Jump a:n prompts forward, or backward if a:n is negative.
-function! s:JumpPrompt(n)
-  let lnums = s:PromptLines()
-  call filter(lnums, 'a:n * (v:val - line(".")) > 0')
+" Jump a:n lines of a:lnums forward, or backward if a:n is negative.
+function! s:JumpTo(n, lnums)
+  let lnums = filter(copy(a:lnums), 'a:n * (v:val - line(".")) > 0')
   if a:n < 0
     call reverse(lnums)
   endif
@@ -43,6 +44,9 @@ function! s:JumpPrompt(n)
   endif
   exe 'normal! ' .. lnums[min([abs(a:n), len(lnums)]) - 1] .. 'Gzt'
 endfunction
+
+" Tool header, e.g. `● Update(path)`, with the path captured.
+let s:tool_header = '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)'
 
 " Lines of the prompts you typed (TUI: `❯ text` at column 1, dup'd by redraws).
 function! s:PromptLines()
@@ -54,6 +58,11 @@ function! s:PromptLines()
     endif
   endfor
   return sort(values(seen), 'n')
+endfunction
+
+" Lines of the tool headers, i.e. where a file was read or changed.
+function! s:HunkLines()
+  return map(matchbufline('%', s:tool_header, 1, '$'), 'v:val.lnum')
 endfunction
 
 " Line nearest to a:expected_lnum whose trimmed text equals a:text
@@ -79,7 +88,7 @@ function! s:ClaudeOpenRef()
   let text = trim(substitute(raw, '\v^\s*\d+\s*[-+]?', '', ''))
   let path = ""
   for i in range(line('.'), 1, -1)
-    let m = matchlist(getline(i), '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)')
+    let m = matchlist(getline(i), s:tool_header)
     if !empty(m)
       let path = m[1]
       break

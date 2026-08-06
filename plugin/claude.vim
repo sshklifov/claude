@@ -42,7 +42,10 @@ function! s:JumpTo(n, lnums)
   if empty(lnums)
     return
   endif
-  exe 'normal! ' .. lnums[min([abs(a:n), len(lnums)]) - 1] .. 'Gzt'
+  let lnum = lnums[min([abs(a:n), len(lnums)]) - 1]
+  exe 'normal! ' .. lnum .. 'Gzt'
+  " Land on the text, not the `❯`/`●` marker.
+  call cursor(lnum, matchend(getline(lnum), '\v^\s*\S\s*') + 1)
 endfunction
 
 " Tool header, e.g. `● Update(path)`, with the path captured.

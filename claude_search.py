@@ -44,8 +44,9 @@ def text_of(msg):
     if isinstance(c, list):
         parts = []
         for b in c:
-            if isinstance(b, dict):
-                parts.append(b.get("text") or b.get("content") or json.dumps(b.get("input", "")))
+            # Skip tool results: file contents would drown out what was said.
+            if isinstance(b, dict) and b.get("type") != "tool_result":
+                parts.append(b.get("text") or json.dumps(b.get("input", "")))
         return " ".join(str(p) for p in parts)
     return ""
 
@@ -80,14 +81,22 @@ def under(cwd, root):
     return cwd == root or cwd.startswith(root.rstrip("/") + "/")
 
 
+def window(text, width):
+    """Cut out width chars around the first needle, else the head."""
+    lo = text.lower()
+    hits = [lo.index(n) for n in needles if n in lo]
+    start = max(0, min(hits) - width // 3) if hits else 0
+    return ("…" if start else "") + text[start:start + width]
+
+
 def make_row(sid, cwd, ts, role, branch, snippet):
     # collapse whitespace so the snippet stays single-line and tab-safe
     snippet = " ".join(snippet.split())
     if human:
         return (f"\033[36m{pretty_ts(ts)}\033[0m [{role}] \033[33m{cwd}\033[0m ({branch})\n"
                 f"    resume: claude --resume {sid}\n"
-                f"    {snippet[:160]}\n")
-    return "\t".join((sid, cwd, pretty_ts(ts), role, snippet[:200]))
+                f"    {window(snippet, 160)}\n")
+    return "\t".join((sid, cwd, pretty_ts(ts), role, window(snippet, 200)))
 
 
 results = []

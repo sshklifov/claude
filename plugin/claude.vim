@@ -23,6 +23,10 @@ function! s:OpenClaudeTerm(args, root)
   call init#Termopen([g:claude_executable] + a:args, #{cwd: a:root})
   let b:root_dir = a:root
   let b:coding_win = coding_win
+  " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
+  setlocal winfixwidth winfixheight
+  " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
+  setlocal scrollback=100000
   nnoremap <buffer> <CR> <cmd>call <SID>ClaudeOpenRef()<CR>
   nnoremap <buffer> ]p <cmd>call <SID>JumpTo(v:count1, <SID>PromptLines())<CR>
   nnoremap <buffer> [p <cmd>call <SID>JumpTo(-v:count1, <SID>PromptLines())<CR>
@@ -30,7 +34,16 @@ function! s:OpenClaudeTerm(args, root)
   nnoremap <buffer> ]P <cmd>exe get(map(matchbufline('%','^❯',1,'$'),'v:val.lnum'),-1,'')<CR>
   nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
+  nnoremap <buffer> <C-l> <cmd>call <SID>TrimScrollback()<CR>
   startinsert
+endfunction
+
+" Experimental: scrollback isn't reflown on resize, so it tears. Drop it all,
+" keeping the live screen.
+function! s:TrimScrollback()
+  let keep = &l:scrollback
+  setlocal scrollback=1
+  let &l:scrollback = keep
 endfunction
 
 " Jump a:n lines of a:lnums forward, or backward if a:n is negative.
@@ -109,7 +122,8 @@ function! s:ClaudeOpenRef()
   " Return to the coding window we opened from; recreate it if it's gone.
   if !win_gotoid(get(b:, 'coding_win', 0))
     let claude_buf = bufnr()
-    above sp
+    " Split off the top, not off us: splitting here would resize the pty.
+    topleft sp
     call setbufvar(claude_buf, 'coding_win', win_getid())
   endif
   exe 'edit ' .. fnameescape(fullname)

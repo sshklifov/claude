@@ -18,11 +18,15 @@ endif
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 function! s:OpenClaudeTerm(args, root)
   let coding_win = win_getid()
+  let coding_buf = bufnr()
   below sp
   enew
-  call init#Termopen([g:claude_executable] + a:args, #{cwd: a:root})
+  " Claude gets its own buffer number, so claude#Api() can find b:coding_buf.
+  call init#Termopen([g:claude_executable] + a:args,
+        \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}})
   let b:root_dir = a:root
   let b:coding_win = coding_win
+  let b:coding_buf = coding_buf
   " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
   setlocal winfixwidth winfixheight
   " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
@@ -120,13 +124,15 @@ function! s:ClaudeOpenRef()
   endif
 
   " Return to the coding window we opened from; recreate it if it's gone.
+  let claude_buf = bufnr()
   if !win_gotoid(get(b:, 'coding_win', 0))
-    let claude_buf = bufnr()
     " Split off the top, not off us: splitting here would resize the pty.
     topleft sp
     call setbufvar(claude_buf, 'coding_win', win_getid())
   endif
   exe 'edit ' .. fnameescape(fullname)
+  " Keep claude#Api() pointed at the file we last opened for it.
+  call setbufvar(claude_buf, 'coding_buf', bufnr())
   let lnum = s:FindSourceLine(lnum, text)
   exe 'normal ' .. lnum .. 'G'
   normal z.
@@ -271,4 +277,83 @@ function! s:OnUsage(data)
 endfunction
 
 command! -nargs=* Plan call s:ClaudePlan(<q-args>)
+" }}}
+
+""""""""""""""""""""""""""""Claude remote API"""""""""""""""""""""""""""" {{{
+" What claude asked of us, newest last. See skills/nvim/SKILL.md.
+let s:api_log = []
+
+" Field colors for the ClaudeLog quickfix; override these at your leisure.
+highlight default link ClaudeLogTime Number
+highlight default link ClaudeLogCmd Identifier
+highlight default link ClaudeLogText String
+
+" a:cmd in a:bufnr's context, no window needed: a window can be closed, or keep
+" its id while another buffer moves in, whereas a buffer stays what it was.
+function! s:RunIn(bufnr, cmd)
+  return trim(luaeval('vim.api.nvim_buf_call(_A[1],
+        \ function() return vim.fn.execute(_A[2]) end)', [a:bufnr, a:cmd]))
+endfunction
+
+" The buffer claude works in: the file it was opened on, else anything still
+" loaded from the same project, so a fallback can't leave it.
+function! s:CodingBuf(termbuf)
+  " Never 0, here or as "none": every lookup would read whatever buffer happens
+  " to be current instead.
+  if a:termbuf <= 0
+    return -1
+  endif
+  let buf = getbufvar(a:termbuf, 'coding_buf', -1)
+  if buf > 0 && bufloaded(buf)
+    return buf
+  endif
+  let root = getbufvar(a:termbuf, 'root_dir', '')
+  if empty(root)
+    return -1
+  endif
+  let bufs = filter(getbufinfo(#{bufloaded: 1, buflisted: 1}),
+        \ 'getbufvar(v:val.bufnr, "&buftype") == "" && stridx(v:val.name, root) == 0')
+  return empty(bufs) ? -1 : bufs[0].bufnr
+endfunction
+
+" Run a:cmd for claude, over `nvim --server $NVIM --remote-expr`, and answer with
+" its output as json. Ask for data by echoing it: `echo json_encode(getwininfo())`.
+" a:1 is claude's own terminal buffer, which it knows as $CLAUDE_BUF; with no
+" coding buffer left we run nothing at all rather than pick something.
+function! claude#Api(cmd, ...)
+  let termbuf = str2nr(get(a:000, 0, 0))
+  let buf = s:CodingBuf(termbuf)
+  if buf <= 0
+    let out = printf('claude#Api: claude session %d has no file to work in', termbuf)
+  else
+    try
+      let out = s:RunIn(buf, a:cmd)
+    catch
+      let out = v:exception
+    endtry
+  endif
+  call add(s:api_log, #{time: strftime('%H:%M:%S'), cmd: a:cmd, out: out})
+  return json_encode(out)
+endfunction
+
+function! s:ClaudeLog()
+  if empty(s:api_log)
+    return init#Warn("ClaudeLog: nothing yet")
+  endif
+  let lines = map(copy(s:api_log), {_, e -> [
+        \ [e.time .. '  ', 'ClaudeLogTime'],
+        \ [printf('%-40.40s  ', e.cmd), 'ClaudeLogCmd'],
+        \ [substitute(e.out[:200], '\n', ' ', 'g'), 'ClaudeLogText'],
+        \ ]})
+  let nr = qutil#CreateCustomQuickfix(lines, "ClaudeLog", expand('<SID>') .. 'ShowLogEntry')
+  call qutil#SetLineData(nr, copy(s:api_log))
+endfunction
+
+" The whole call and its answer, untruncated.
+function! s:ShowLogEntry()
+  let entry = qutil#GetLineData()
+  echo entry.cmd .. "\n" .. entry.out
+endfunction
+
+command! -nargs=0 ClaudeLog call s:ClaudeLog()
 " }}}

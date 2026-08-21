@@ -1,0 +1,602 @@
+#!/usr/bin/env python3
+"""cc-usage - daily token/cost statistics for Claude Code, from local transcripts.
+
+Reads ~/.claude/projects/**/*.jsonl and reports sessions, tokens and
+API-equivalent cost per day. Cost is what the same traffic would cost on the
+Anthropic API at list prices -- on a Claude subscription you are not billed
+this; it is a "what it would have cost" figure.
+"""
+import argparse, json, os, shutil, sys
+from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+ROOT = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
+
+# USD per 1M tokens (input, output), Anthropic list prices.
+PRICES = {
+    "claude-fable-5":   (10.0, 50.0),
+    "claude-mythos-5":  (10.0, 50.0),
+    "claude-opus-5":     (5.0, 25.0),
+    "claude-opus-4-8":   (5.0, 25.0),
+    "claude-opus-4-7":   (5.0, 25.0),
+    "claude-opus-4-6":   (5.0, 25.0),
+    "claude-opus-4-5":   (5.0, 25.0),
+    "claude-sonnet-5":   (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
+    "claude-haiku-4-5":  (1.0,  5.0),
+    "claude-haiku-4-1":  (1.0,  5.0),
+}
+FAST_PRICES = {"claude-opus-5": (10.0, 50.0), "claude-opus-4-8": (10.0, 50.0)}
+CACHE_READ_MULT, CACHE_5M_MULT, CACHE_1H_MULT = 0.1, 1.25, 2.0
+
+
+def norm_model(m):
+    """claude-haiku-4-5-20251001 -> claude-haiku-4-5 ; strip [1m] suffixes."""
+    m = (m or "").replace("[1m]", "")
+    parts = m.split("-")
+    if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) == 8:
+        m = "-".join(parts[:-1])
+    return m
+
+
+class Bucket:
+    __slots__ = ("inp", "out", "cr", "cw5", "cw1h", "think", "reqs", "cost", "web")
+
+    def __init__(self):
+        self.inp = self.out = self.cr = self.cw5 = self.cw1h = self.think = 0
+        self.reqs = self.web = 0
+        self.cost = 0.0
+
+    def add(self, o):
+        for f in self.__slots__:
+            setattr(self, f, getattr(self, f) + getattr(o, f))
+
+    @property
+    def tokens(self):
+        return self.inp + self.out + self.cr + self.cw5 + self.cw1h
+
+
+def price(model, fast):
+    tbl = FAST_PRICES if fast else PRICES
+    if model in tbl:
+        return tbl[model]
+    return PRICES.get(model) or (5.0, 25.0)  # unknown model -> assume opus tier
+
+
+PROMPT_SOURCES = ("typed", "queued", "suggestion_accepted")
+SKIP_PREFIXES = ("<", "[Request interrupted", "Caveat:", "API Error", "This session is")
+
+
+def first_text(msg):
+    """Plain text of a user message, or None if it isn't a typed prompt."""
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        for blk in c:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                return blk.get("text") or ""
+    return None
+
+
+def clean_prompt(t):
+    """Normalize a prompt to one short line; drop non-prompt noise."""
+    if not t:
+        return None
+    t = t.strip()
+    if t.startswith("<command-name>"):          # slash command invocation
+        name = t.split("<command-name>", 1)[1].split("</command-name>")[0].strip()
+        args = ""
+        if "<command-args>" in t:
+            args = t.split("<command-args>", 1)[1].split("</command-args>")[0].strip()
+        t = f"{name} {args}".strip()
+    if not t or t.startswith(SKIP_PREFIXES):
+        return None
+    return " ".join(t.split())
+
+
+def collect(since=None, until=None):
+    seen = set()
+    recs = []                      # per-request rows in range
+    sess_first = {}                # sessionId -> earliest local date (all history)
+    sess_meta = {}
+    sess_desc = {}                 # sessionId -> (timestamp, first typed prompt)
+    for f in ROOT.rglob("*.jsonl"):
+        project = f.parent.name
+        try:
+            fh = f.open(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"type":"user"' in line and '"usage"' not in line:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get("type") != "user" or d.get("isMeta") \
+                            or d.get("isSidechain"):
+                        continue
+                    src = d.get("promptSource")
+                    if src is not None and src not in PROMPT_SOURCES:
+                        continue
+                    txt = clean_prompt(first_text(d.get("message") or {}))
+                    if not txt:
+                        continue
+                    sid = d.get("sessionId") or d.get("session_id") or "?"
+                    ts = d.get("timestamp") or ""
+                    if sid not in sess_desc or ts < sess_desc[sid][0]:
+                        sess_desc[sid] = (ts, txt)
+                    continue
+                if '"usage"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("type") != "assistant":
+                    continue
+                msg = d.get("message") or {}
+                u = msg.get("usage")
+                if not u:
+                    continue
+                key = d.get("uuid") or (d.get("requestId"), d.get("timestamp"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                model = norm_model(msg.get("model"))
+                if not model or model == "<synthetic>":
+                    continue
+                ts = d.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+                except ValueError:
+                    continue
+                day = dt.date()
+                sid = d.get("sessionId") or d.get("session_id") or "?"
+                cwd = d.get("cwd") or ""
+                if sid not in sess_first or day < sess_first[sid]:
+                    sess_first[sid] = day
+                if sid not in sess_meta or (cwd and not sess_meta[sid][1]):
+                    sess_meta[sid] = (project, cwd, dt)
+                if (since and day < since) or (until and day > until):
+                    continue
+
+                cc = u.get("cache_creation") or {}
+                b = Bucket()
+                b.reqs = 1
+                b.inp = u.get("input_tokens", 0) or 0
+                b.out = u.get("output_tokens", 0) or 0
+                b.cr = u.get("cache_read_input_tokens", 0) or 0
+                b.cw1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
+                b.cw5 = cc.get("ephemeral_5m_input_tokens", 0) or 0
+                if not cc:
+                    b.cw5 = u.get("cache_creation_input_tokens", 0) or 0
+                b.think = ((u.get("output_tokens_details") or {})
+                           .get("thinking_tokens", 0) or 0)
+                b.web = ((u.get("server_tool_use") or {})
+                         .get("web_search_requests", 0) or 0)
+                pin, pout = price(model, u.get("speed") == "fast")
+                b.cost = (b.inp * pin
+                          + b.out * pout
+                          + b.cr * pin * CACHE_READ_MULT
+                          + b.cw5 * pin * CACHE_5M_MULT
+                          + b.cw1h * pin * CACHE_1H_MULT) / 1e6
+                recs.append((day, sid, project, model, bool(d.get("isSidechain")), b,
+                             cwd or project))
+    return recs, sess_first, sess_meta, sess_desc
+
+
+KIND_NAMES = {
+    "session": "5-hour session", "weekly_all": "weekly (all models)",
+    "weekly_opus": "weekly (Opus)", "weekly_sonnet": "weekly (Sonnet)",
+    "weekly_oauth_apps": "weekly (OAuth apps)", "weekly_cowork": "weekly (Cowork)",
+}
+
+
+def bar(pct, width=28):
+    pct = max(0, min(100, int(pct or 0)))
+    fill = round(pct * width / 100)
+    return "[" + "\N{FULL BLOCK}" * fill + "\N{LIGHT SHADE}" * (width - fill) + "]"
+
+
+def rel(dt, now):
+    """'in 2d 7h' / 'passed 1.2h ago'"""
+    secs = (dt - now).total_seconds()
+    past = secs < 0
+    secs = abs(secs)
+    d, h, m = int(secs // 86400), int(secs % 86400 // 3600), int(secs % 3600 // 60)
+    span = f"{d}d {h}h" if d else (f"{h}h {m}m" if h else f"{m}m")
+    return f"{span} ago" if past else f"in {span}"
+
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CACHE_FILE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / \
+    "cc-usage" / "usage.json"
+
+
+def oauth_token():
+    """The claude.ai OAuth access token, if one is on disk and still valid."""
+    cred = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) \
+        / ".credentials.json"
+    try:
+        o = (json.loads(cred.read_text()).get("claudeAiOauth") or {})
+    except (OSError, ValueError):
+        return None, "no credentials file (keychain-based login?)"
+    tok, exp = o.get("accessToken"), o.get("expiresAt")
+    if not tok:
+        return None, "no access token on disk"
+    if exp and exp / 1000 < datetime.now().timestamp():
+        # Refreshing would rotate the token Claude Code itself holds - leave it alone.
+        return None, "access token expired; start any Claude Code session to renew"
+    return tok, None
+
+
+def fetch_utilization():
+    """GET the same endpoint /usage calls. Returns (payload, error)."""
+    tok, err = oauth_token()
+    if not tok:
+        return None, err
+    req = Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {tok}",
+        "Content-Type": "application/json",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "cc-usage",
+    })
+    try:
+        with urlopen(req, timeout=15) as r:
+            payload = json.loads(r.read().decode())
+    except HTTPError as e:
+        return None, (f"HTTP {e.code}" + (" - usage endpoint is rate limited"
+                                          if e.code == 429 else ""))
+    except (URLError, OSError, ValueError) as e:
+        return None, str(e)
+    try:                              # our own cache; ~/.claude.json belongs to the CLI
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(
+            {"fetchedAtMs": int(datetime.now().timestamp() * 1000),
+             "utilization": payload}))
+    except OSError:
+        pass
+    return payload, None
+
+
+def cached_snapshot():
+    """Newest of our own cache and the snapshot Claude Code keeps, as (dict, acct)."""
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home())) / ".claude.json"
+    if not cfg.is_file():
+        cfg = Path.home() / ".claude.json"
+    snaps, acct = [], {}
+    try:
+        d = json.loads(cfg.read_text())
+        acct = d.get("oauthAccount") or {}
+        if d.get("cachedUsageUtilization"):
+            snaps.append(d["cachedUsageUtilization"])
+    except (OSError, ValueError):
+        pass
+    try:
+        snaps.append(json.loads(CACHE_FILE.read_text()))
+    except (OSError, ValueError):
+        pass
+    snaps = [s for s in snaps if s.get("utilization")]
+    snaps.sort(key=lambda s: s.get("fetchedAtMs") or 0, reverse=True)
+    return (snaps[0] if snaps else {}), acct
+
+
+def is_stale(snap, max_age_min=5):
+    """A snapshot is stale if it's old or any of its windows has since reset."""
+    if not snap.get("utilization"):
+        return True
+    now = datetime.now().astimezone()
+    ms = snap.get("fetchedAtMs")
+    if not ms or (now - datetime.fromtimestamp(ms / 1000).astimezone()) \
+            > timedelta(minutes=max_age_min):
+        return True
+    for r in (snap["utilization"].get("limits") or []):
+        try:
+            if r.get("resets_at") and \
+                    datetime.fromisoformat(r["resets_at"]).astimezone() < now:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def show_limits(refresh=True):
+    """Plan limit windows, refreshed from the same endpoint /usage uses."""
+    cu, acct = cached_snapshot()
+    fetch_err = None
+    if refresh and is_stale(cu):
+        tty = sys.stderr.isatty()
+        if tty:                       # transient line; skip it when piped to a file
+            print("Updating plan limits\N{HORIZONTAL ELLIPSIS}", end="", flush=True,
+                  file=sys.stderr)
+        fresh, fetch_err = fetch_utilization()
+        if tty:
+            print("\r" + " " * 24 + "\r", end="", flush=True, file=sys.stderr)
+        if fresh:
+            cu = {"fetchedAtMs": int(datetime.now().timestamp() * 1000),
+                  "utilization": fresh}
+    u = cu.get("utilization") or {}
+    now = datetime.now().astimezone()
+
+    seat = (acct.get("seatTier") or "?").replace("_", " ")
+    org = acct.get("organizationName") or "-"
+    otype = (acct.get("organizationType") or "").replace("_", " ")
+    print(f"Plan limits - {seat} seat on {org}"
+          f"{' (' + otype + ')' if otype else ''}, role: {acct.get('organizationRole','?')}")
+    if not u:
+        print(f"\nNo limit data available ({fetch_err or 'no snapshot on disk'})."
+              "\nRun /usage in Claude Code once, or check your login with /login.")
+        return
+    if fetch_err:
+        print(f"could not refresh ({fetch_err}) - showing last known snapshot")
+    if cu.get("fetchedAtMs"):
+        snap = datetime.fromtimestamp(cu["fetchedAtMs"] / 1000).astimezone()
+        age = (now - snap).total_seconds()
+        print("live, just fetched" if age < 10
+              else f"snapshot taken {rel(snap, now)} ({snap:%Y-%m-%d %H:%M})")
+
+    rows = u.get("limits") or []
+    if not rows:                     # older shape: explicit window keys
+        rows = [{"kind": k, "percent": (u.get(k) or {}).get("utilization"),
+                 "resets_at": (u.get(k) or {}).get("resets_at")}
+                for k in ("five_hour", "seven_day") if u.get(k)]
+    print()
+    stale = False
+    for r in rows:
+        pct = r.get("percent")
+        if pct is None:
+            continue
+        name = KIND_NAMES.get(r.get("kind"), r.get("kind") or "?")
+        note = ""
+        ra = r.get("resets_at")
+        if ra:
+            try:
+                rt = datetime.fromisoformat(ra).astimezone()
+                if rt < now:
+                    note = f"  window already reset ({rel(rt, now)}) - figure is stale"
+                    stale = True
+                else:
+                    note = f"  resets {rel(rt, now)} ({rt:%a %H:%M})"
+            except ValueError:
+                pass
+        if r.get("severity") and r["severity"] != "normal":
+            note += f"  [{r['severity']}]"
+        print(f"  {name:<20} {bar(pct)} {pct:>3}%{note}")
+
+    ex = u.get("extra_usage") or {}
+    sp = u.get("spend") or {}
+    if ex.get("is_enabled") or sp.get("enabled"):
+        dp = ex.get("decimal_places", 2)
+        cur = ex.get("currency", "USD")
+        used = (sp.get("used") or {}).get("amount_minor", ex.get("used_credits", 0) or 0)
+        cap = (sp.get("limit") or {}).get("amount_minor", ex.get("monthly_limit") or 0)
+        div = 10 ** dp
+        pct = round(used / cap * 100) if cap else 0
+        print(f"\n  {'usage credits':<20} {bar(pct)} {pct:>3}%"
+              f"  {used/div:,.2f} / {cap/div:,.2f} {cur} this month")
+        if ex.get("spend_limit_reached"):
+            print("  spend limit reached - raise it with /usage-credits")
+
+    print("\nThese windows are your own per-seat allowance - not pooled with teammates."
+          "\nThey cover Claude Code, Claude chat and Cowork together, across all models.")
+    if stale:
+        print("Stale figures above could not be refreshed; run /usage in Claude Code.")
+    if u.get("member_dashboard_available") is False:
+        print("Org-wide spend reporting is admin-only on your role"
+              " (claude.ai/admin-settings/usage).")
+
+
+def pretty_path(p):
+    """/home/stef/Downloads -> ~/Downloads ; fall back to the raw dir name."""
+    if not p.startswith("/"):
+        return p
+    home = str(Path.home())
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+
+def fmt_tok(n):
+    for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if n >= div:
+            return f"{n/div:.1f}{suf}"
+    return str(int(n))
+
+
+def table(rows, headers, aligns=None):
+    aligns = aligns or ["<"] + [">"] * (len(headers) - 1)
+    w = [len(h) for h in headers]
+    for r in rows:
+        for i, c in enumerate(r):
+            w[i] = max(w[i], len(str(c)))
+    out = ["  ".join(f"{h:{aligns[i]}{w[i]}}" for i, h in enumerate(headers)),
+           "  ".join("-" * w[i] for i in range(len(headers)))]
+    for r in rows:
+        out.append("  ".join(f"{str(c):{aligns[i]}{w[i]}}" for i, c in enumerate(r)))
+    return "\n".join(out)
+
+
+def group(recs, keyfn):
+    g = defaultdict(Bucket)
+    for r in recs:
+        g[keyfn(r)].add(r[5])
+    return g
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("when", nargs="?", default=None,
+                    help="today | yesterday | week | month | all | YYYY-MM-DD | limits")
+    ap.add_argument("-d", "--days", type=int, help="last N days (default 30)")
+    ap.add_argument("-m", "--models", action="store_true", help="break down by model")
+    ap.add_argument("-p", "--projects", action="store_true", help="break down by project")
+    ap.add_argument("-s", "--sessions", action="store_true", help="list sessions in range")
+    ap.add_argument("-l", "--limits", action="store_true",
+                    help="also show plan limit windows")
+    ap.add_argument("-j", "--json", action="store_true", help="machine-readable output")
+    ap.add_argument("-R", "--no-refresh", action="store_true",
+                    help="never call the usage endpoint; use the cached snapshot")
+    a = ap.parse_args()
+
+    if a.when == "limits":
+        show_limits(refresh=not a.no_refresh)
+        return
+
+    today = datetime.now().astimezone().date()
+    since = until = None
+    label = ""
+    if a.when in ("today", None) and a.when == "today":
+        since = until = today; label = "today"
+    elif a.when == "yesterday":
+        since = until = today - timedelta(days=1); label = "yesterday"
+    elif a.when == "week":
+        since = today - timedelta(days=6); label = "last 7 days"
+    elif a.when == "month":
+        since = today - timedelta(days=29); label = "last 30 days"
+    elif a.when == "all":
+        label = "all time"
+    elif a.when:
+        try:
+            since = until = datetime.strptime(a.when, "%Y-%m-%d").date()
+            label = a.when
+        except ValueError:
+            ap.error(f"unrecognized period: {a.when}")
+    if a.days:
+        since = today - timedelta(days=a.days - 1); until = None
+        label = f"last {a.days} days"
+    if since is None and until is None and not label:
+        since = today - timedelta(days=29); label = "last 30 days"
+
+    if not ROOT.is_dir():
+        sys.exit(f"no transcripts at {ROOT}")
+    recs, sess_first, sess_meta, sess_desc = collect(since, until)
+    if not recs:
+        print(f"no usage found for {label}")
+        return
+
+    days = group(recs, lambda r: r[0])
+    started = defaultdict(int)
+    for sid, d in sess_first.items():
+        if (not since or d >= since) and (not until or d <= until):
+            started[d] += 1
+    active = defaultdict(set)
+    for r in recs:
+        active[r[0]].add(r[1])
+
+    if a.json:
+        payload = {
+            "range": label, "generated": datetime.now().astimezone().isoformat(),
+            "days": [
+                {"date": str(d), "sessions_started": started.get(d, 0),
+                 "sessions_active": len(active[d]), "requests": b.reqs,
+                 "input": b.inp, "output": b.out, "thinking": b.think,
+                 "cache_read": b.cr, "cache_write_5m": b.cw5, "cache_write_1h": b.cw1h,
+                 "total_tokens": b.tokens, "cost_usd": round(b.cost, 4)}
+                for d, b in sorted(days.items())],
+        }
+        tot = Bucket()
+        for b in days.values():
+            tot.add(b)
+        payload["total"] = {"requests": tot.reqs, "total_tokens": tot.tokens,
+                            "cost_usd": round(tot.cost, 4),
+                            "sessions_started": sum(started.values())}
+        payload["by_model"] = {m: {"tokens": b.tokens, "cost_usd": round(b.cost, 4),
+                                  "requests": b.reqs}
+                               for m, b in sorted(group(recs, lambda r: r[3]).items(),
+                                                  key=lambda kv: -kv[1].cost)}
+        payload["by_project"] = {pretty_path(p): {"tokens": b.tokens, "cost_usd": round(b.cost, 4),
+                                    "requests": b.reqs}
+                                 for p, b in sorted(group(recs, lambda r: r[6]).items(),
+                                                    key=lambda kv: -kv[1].cost)}
+        payload["sessions"] = [
+            {"id": sid, "first_seen": str(sess_first.get(sid, "")),
+             "project": pretty_path(sess_meta.get(sid, ("", "", None))[1]
+                                    or sess_meta.get(sid, ("", "", None))[0]),
+             "description": sess_desc.get(sid, ("", None))[1],
+             "requests": b.reqs, "total_tokens": b.tokens,
+             "cost_usd": round(b.cost, 4)}
+            for sid, b in sorted(group(recs, lambda r: r[1]).items(),
+                                 key=lambda kv: -kv[1].cost)]
+        json.dump(payload, sys.stdout, indent=2)
+        print()
+        return
+
+    rows, tot = [], Bucket()
+    for d, b in sorted(days.items()):
+        tot.add(b)
+        rows.append([str(d), started.get(d, 0), len(active[d]), b.reqs,
+                     fmt_tok(b.inp), fmt_tok(b.out), fmt_tok(b.cr),
+                     fmt_tok(b.cw5 + b.cw1h), fmt_tok(b.tokens), f"${b.cost:,.2f}"])
+    print(f"Claude Code usage - {label}\n")
+    print(table(rows, ["date", "new", "act", "reqs", "in", "out",
+                       "cache rd", "cache wr", "tokens", "cost"]))
+    n = len(days)
+    print(f"\ntotal   {fmt_tok(tot.tokens)} tokens over {tot.reqs:,} requests"
+          f", {sum(started.values())} sessions started   ${tot.cost:,.2f}")
+    if n > 1:
+        print(f"average ${tot.cost/n:,.2f}/day over {n} active day(s)"
+              f"   projected 30d: ${tot.cost/n*30:,.2f}")
+    sub = Bucket()
+    for r in recs:
+        if r[4]:
+            sub.add(r[5])
+    if sub.reqs:
+        print(f"of which subagents: {fmt_tok(sub.tokens)} tokens, ${sub.cost:,.2f}"
+              f" ({sub.cost/tot.cost*100:.0f}%)")
+    if tot.think:
+        print(f"thinking tokens: {fmt_tok(tot.think)} of {fmt_tok(tot.out)} output")
+    if tot.web:
+        print(f"web searches: {tot.web}")
+
+    if a.models:
+        g = sorted(group(recs, lambda r: r[3]).items(), key=lambda kv: -kv[1].cost)
+        print("\nby model\n" + table(
+            [[m, b.reqs, fmt_tok(b.inp), fmt_tok(b.out), fmt_tok(b.cr),
+              fmt_tok(b.tokens), f"${b.cost:,.2f}"] for m, b in g],
+            ["model", "reqs", "in", "out", "cache rd", "tokens", "cost"]))
+    if a.projects:
+        g = sorted(group(recs, lambda r: r[6]).items(), key=lambda kv: -kv[1].cost)
+        print("\nby project\n" + table(
+            [[pretty_path(p), b.reqs, fmt_tok(b.tokens), f"${b.cost:,.2f}"]
+             for p, b in g],
+            ["project", "reqs", "tokens", "cost"]))
+    if a.sessions:
+        g = sorted(group(recs, lambda r: r[1]).items(), key=lambda kv: -kv[1].cost)
+        rows_s = []
+        for sid, b in g:
+            meta = sess_meta.get(sid, ("", "", None))
+            rows_s.append([sid[:8], str(sess_first.get(sid, "")),
+                           pretty_path(meta[1] or meta[0]), b.reqs,
+                           fmt_tok(b.tokens), f"${b.cost:,.2f}",
+                           sess_desc.get(sid, ("", "-"))[1]])
+        # let the description use whatever width is left in the terminal
+        heads = ["session", "first seen", "project", "reqs", "tokens", "cost"]
+        term = shutil.get_terminal_size((130, 24)).columns
+        fixed = sum(max([len(heads[i])] + [len(str(r[i])) for r in rows_s])
+                    for i in range(6)) + 2 * 6
+        room = max(30, term - fixed - 1)
+        for r in rows_s:
+            if len(r[6]) > room:
+                r[6] = r[6][:room - 1] + "\N{HORIZONTAL ELLIPSIS}"
+        print("\nby session\n" + table(
+            rows_s,
+            ["session", "first seen", "project", "reqs", "tokens", "cost", "what"],
+            ["<", ">", "<", ">", ">", ">", "<"]))
+
+    if a.limits:
+        print()
+        show_limits(refresh=not a.no_refresh)
+    print("\nCost = Anthropic API list prices for the same traffic (cache reads 0.1x,"
+          "\nwrites 1.25x/2x for 5m/1h TTL). On a Claude subscription you are not"
+          "\nbilled this - it is the API-equivalent value of what you used.")
+
+
+if __name__ == "__main__":
+    main()

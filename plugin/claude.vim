@@ -227,3 +227,25 @@ endfunction
 
 command! -bang -nargs=* ClaudeResume call s:ClaudeResume("<bang>", <f-args>)
 " }}}
+
+""""""""""""""""""""""""""""Usage stats"""""""""""""""""""""""""""" {{{
+let s:cc_usage = expand('<sfile>:p:h:h') .. '/cc-usage'
+
+" Token/cost usage: by default today's, with its sessions and the plan limits.
+function! s:ClaudePlan(args)
+  let args = empty(a:args) ? ['today', '-l', '-s'] : split(a:args)
+  call init#OnJobOutput([s:cc_usage] + args, expand('<SID>') .. 'OnUsage')
+endfunction
+
+function! s:OnUsage(data)
+  " stdout ends in an empty element (the stream's final newline): drop it.
+  let lines = empty(get(a:data, -1, 'x')) ? a:data[:-2] : a:data
+  if empty(lines)
+    return init#Warn("Plan: cc-usage said nothing")
+  endif
+  call init#CustomBottomBuffer('cc-usage', lines)
+  exe 'resize ' .. min([len(lines), &lines / 2])
+endfunction
+
+command! -nargs=* Plan call s:ClaudePlan(<q-args>)
+" }}}

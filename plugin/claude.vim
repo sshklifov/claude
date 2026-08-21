@@ -98,7 +98,7 @@ function! s:ClaudeOpenRef()
   let raw = getline('.')
   let lnum = str2nr(matchstr(raw, '\v^\s*\zs\d+'))
   if lnum <= 0
-    return init#Warn("ClaudeOpen: no line number on this line")
+    return
   endif
   " Code on this line (minus gutter number and diff marker) to verify the jump.
   let text = trim(substitute(raw, '\v^\s*\d+\s*[-+]?', '', ''))

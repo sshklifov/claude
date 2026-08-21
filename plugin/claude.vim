@@ -133,38 +133,61 @@ function! s:ClaudeOpenRef()
 endfunction
 
 """"""""""""""""""""""""""""Claude interactive"""""""""""""""""""""""""""" {{{
-function! s:ClaudeInteractive(args) range
-  let root = FugitiveWorkTree()
-  if empty(root)
-    let root = getcwd()
-  endif
+" The prompt text for a:args, prefixed with where we are (file, range, context).
+function! s:MakePrompt(args, root, first, last)
   let filename = expand('%:p')
-
-  if empty(a:args)
-    let prompt = []
-  elseif isdirectory(filename)
-    let prompt = [a:args]
+  if isdirectory(filename)
+    return a:args
   elseif filereadable(filename)
     let marker = ""
-    if stridx(filename, root) == 0
-      let filename = filename[len(root):]
+    if stridx(filename, a:root) == 0
+      let filename = filename[len(a:root):]
       if filename[0] == '/'
         let filename = filename[1:]
       endif
       let marker = "@"
     endif
-    let whole_file = a:firstline == 1 && a:lastline == line('$')
+    let whole_file = a:first == 1 && a:last == line('$')
     if whole_file
-      let prompt = [printf('In %s%s: %s', marker, filename, a:args)]
-    else
-      let prompt = [printf('In %s%s lines %d-%d: %s', marker, filename, a:firstline, a:lastline, a:args)]
+      return printf('In %s%s: %s', marker, filename, a:args)
     endif
-  else
-    let context = join(getline(a:firstline, a:lastline), "\n")
-    let prompt = [printf("%s\n%s", a:args, context)]
+    return printf('In %s%s lines %d-%d: %s', marker, filename, a:first, a:last, a:args)
   endif
+  let context = join(getline(a:first, a:last), "\n")
+  return printf("%s\n%s", a:args, context)
+endfunction
 
-  call s:OpenClaudeTerm(prompt, root)
+" Write the prompt at leisure; closing the buffer sends it off (empty: cancel).
+function! s:ClaudePromptBuffer(text, root)
+  below sp
+  enew
+  setlocal buftype=nofile bufhidden=wipe noswapfile
+  file claude-prompt
+  call setline(1, split(a:text, "\n", v:true))
+  call init#OnBufDelete(bufnr(), expand('<SID>') .. 'SendPrompt', bufnr(), a:root)
+  call cursor(1, 1)
+  startinsert!
+endfunction
+
+function! s:SendPrompt(nr, root)
+  let text = trim(join(getbufline(a:nr, 1, '$'), "\n"))
+  if empty(text)
+    return
+  endif
+  " We're still inside the wipeout: open the terminal once it has settled.
+  call timer_start(0, {-> s:OpenClaudeTerm([text], a:root)})
+endfunction
+
+function! s:ClaudeInteractive(args) range
+  let root = FugitiveWorkTree()
+  if empty(root)
+    let root = getcwd()
+  endif
+  let text = s:MakePrompt(a:args, root, a:firstline, a:lastline)
+  if empty(a:args)
+    return s:ClaudePromptBuffer(text, root)
+  endif
+  call s:OpenClaudeTerm([text], root)
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)

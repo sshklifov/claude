@@ -23,7 +23,7 @@ function! s:OpenClaudeTerm(args, root)
   enew
   " Claude gets its own buffer number, so claude#Api() can find b:coding_buf.
   call init#Termopen([g:claude_executable] + a:args,
-        \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}})
+        \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
   let b:root_dir = a:root
   let b:coding_win = coding_win
   let b:coding_buf = coding_buf

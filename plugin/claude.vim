@@ -15,10 +15,17 @@ if !exists('g:claude_executable')
   let g:claude_executable = s:FindClaudeExecutable()
 endif
 
+" bufnr() when we're on a file of a:root, else -1. A resumed session opens in
+" its own project, which needn't be the one we are sitting in, and claude#Api()
+" must not run there.
+function! s:ProjectBuf(root)
+  return &buftype == '' && stridx(expand('%:p'), a:root) == 0 ? bufnr() : -1
+endfunction
+
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 function! s:OpenClaudeTerm(args, root)
   let coding_win = win_getid()
-  let coding_buf = bufnr()
+  let coding_buf = s:ProjectBuf(a:root)
   below sp
   enew
   " Claude gets its own buffer number, so claude#Api() can find b:coding_buf.
@@ -118,7 +125,8 @@ function! s:ClaudeOpenRef()
     return init#Warn("ClaudeOpen: no file header found")
   endif
   let path = expand(path)  " resolve a leading ~
-  let fullname = path[0] == '/' ? path : b:root_dir .. '/' .. path
+  let root = b:root_dir
+  let fullname = path[0] == '/' ? path : root .. '/' .. path
   if !filereadable(fullname)
     return init#Warn("ClaudeOpen: no such file: %s", fullname)
   endif
@@ -132,7 +140,7 @@ function! s:ClaudeOpenRef()
   endif
   exe 'edit ' .. fnameescape(fullname)
   " Keep claude#Api() pointed at the file we last opened for it.
-  call setbufvar(claude_buf, 'coding_buf', bufnr())
+  call setbufvar(claude_buf, 'coding_buf', s:ProjectBuf(root))
   let lnum = s:FindSourceLine(lnum, text)
   exe 'normal ' .. lnum .. 'G'
   normal z.

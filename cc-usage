@@ -526,7 +526,10 @@ def main():
     ap.add_argument("-d", "--days", type=int, help="last N days (default 30)")
     ap.add_argument("-m", "--models", action="store_true", help="break down by model")
     ap.add_argument("-p", "--projects", action="store_true", help="break down by project")
-    ap.add_argument("-s", "--sessions", action="store_true", help="list sessions in range")
+    ap.add_argument("-s", "--sessions", action="store_true", default=True,
+                    help="list sessions in range (on by default)")
+    ap.add_argument("-S", "--no-sessions", dest="sessions", action="store_false",
+                    help="hide the session list")
     ap.add_argument("-l", "--limits", action="store_true",
                     help="also show plan limit windows")
     ap.add_argument("-j", "--json", action="store_true", help="machine-readable output")

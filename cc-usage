@@ -6,9 +6,9 @@ API-equivalent cost per day. Cost is what the same traffic would cost on the
 Anthropic API at list prices -- on a Claude subscription you are not billed
 this; it is a "what it would have cost" figure.
 """
-import argparse, json, os, shutil, sys
+import argparse, json, os, re, shutil, sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -429,11 +429,100 @@ def group(recs, keyfn):
     return g
 
 
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+            "sunday")
+DAY_RE = re.compile(r"(?:(last|this|past)\s+)?"
+                    r"(mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?|sun)(?:day)?")
+DAY_FMTS = ("%Y-%m-%d", "%Y/%m/%d", "%b %d", "%B %d", "%d %b", "%d %B")
+MONTH_FMTS = ("%Y-%m", "%Y/%m", "%b %Y", "%B %Y", "%b", "%B")
+
+
+def month_range(y, m):
+    start = date(y, m, 1)
+    nxt = date(y + m // 12, m % 12 + 1, 1)
+    return start, nxt - timedelta(days=1), f"{start:%B %Y}"
+
+
+def cal_month(today, back):
+    m = today.month - 1 - back
+    return month_range(today.year + m // 12, m % 12 + 1)
+
+
+def cal_week(today, back):
+    start = today - timedelta(days=today.weekday() + 7 * back)
+    end = start + timedelta(days=6)
+    return start, end, f"week of {start} ({start:%a} - {end:%a})"
+
+
+def parse_when(text, today):
+    """A period word, date or phrase -> (since, until, label), or None if unknown.
+
+    (None, None, label) means all time; until=None means "up to today".
+    """
+    t = " ".join(text.lower().replace(",", " ").split())
+    if t in ("today", "now"):
+        return today, today, "today"
+    if t in ("yesterday", "yday"):
+        d = today - timedelta(days=1)
+        return d, d, "yesterday"
+    if t == "week":
+        return today - timedelta(days=6), None, "last 7 days"
+    if t == "month":
+        return today - timedelta(days=29), None, "last 30 days"
+    if t in ("all", "ever", "all time"):
+        return None, None, "all time"
+
+    m = re.fullmatch(r"(this|last|previous)\s+(week|month)", t)
+    if m:                                      # calendar week/month, not rolling
+        return (cal_week if m[2] == "week" else cal_month)(today, m[1] != "this")
+
+    m = DAY_RE.fullmatch(t)
+    if m:            # most recent such day; "last friday" on a Friday is a week back
+        i = [w[:3] for w in WEEKDAYS].index(m[2][:3])
+        back = (today.weekday() - i) % 7 or (7 if m[1] == "last" else 0)
+        d = today - timedelta(days=back)
+        return d, d, f"{d:%A} {d}"
+
+    m = re.fullmatch(r"(\d+)\s+(day|week|month)s?\s+ago", t)
+    if m:
+        n = int(m[1])
+        if m[2] == "day":
+            d = today - timedelta(days=n)
+            return d, d, f"{d} ({n} day{'s' if n != 1 else ''} ago)"
+        return (cal_week if m[2] == "week" else cal_month)(today, n)
+
+    m = re.fullmatch(r"(?:last|past)\s+(\d+)\s+(day|week|month)s?", t)
+    if m:
+        n = int(m[1]) * {"day": 1, "week": 7, "month": 30}[m[2]]
+        return today - timedelta(days=n - 1), None, f"last {n} days"
+
+    for fmt in DAY_FMTS:
+        try:
+            d = datetime.strptime(t, fmt).date()
+        except ValueError:
+            continue
+        if "%Y" not in fmt:                    # "aug 5" -> this year, or last if ahead
+            d = d.replace(year=today.year)
+            if d > today:
+                d = d.replace(year=today.year - 1)
+        return d, d, str(d)
+
+    for fmt in MONTH_FMTS:
+        try:
+            d = datetime.strptime(t, fmt).date()
+        except ValueError:
+            continue
+        y = d.year if "%Y" in fmt else today.year - (d.month > today.month)
+        return month_range(y, d.month)
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("when", nargs="?", default=None,
-                    help="today | yesterday | week | month | all | YYYY-MM-DD | limits")
+                    help="today | yesterday | last friday | this week | august"
+                         " | 2 days ago | last 3 weeks | YYYY-MM-DD | all | limits")
     ap.add_argument("-d", "--days", type=int, help="last N days (default 30)")
     ap.add_argument("-m", "--models", action="store_true", help="break down by model")
     ap.add_argument("-p", "--projects", action="store_true", help="break down by project")
@@ -452,26 +541,15 @@ def main():
     today = datetime.now().astimezone().date()
     since = until = None
     label = ""
-    if a.when in ("today", None) and a.when == "today":
-        since = until = today; label = "today"
-    elif a.when == "yesterday":
-        since = until = today - timedelta(days=1); label = "yesterday"
-    elif a.when == "week":
-        since = today - timedelta(days=6); label = "last 7 days"
-    elif a.when == "month":
-        since = today - timedelta(days=29); label = "last 30 days"
-    elif a.when == "all":
-        label = "all time"
-    elif a.when:
-        try:
-            since = until = datetime.strptime(a.when, "%Y-%m-%d").date()
-            label = a.when
-        except ValueError:
+    if a.when:
+        got = parse_when(a.when, today)
+        if not got:
             ap.error(f"unrecognized period: {a.when}")
+        since, until, label = got
     if a.days:
         since = today - timedelta(days=a.days - 1); until = None
         label = f"last {a.days} days"
-    if since is None and until is None and not label:
+    if not label:
         since = today - timedelta(days=29); label = "last 30 days"
 
     if not ROOT.is_dir():

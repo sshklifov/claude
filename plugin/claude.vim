@@ -264,8 +264,18 @@ let s:cc_usage = expand('<sfile>:p:h:h') .. '/cc-usage'
 
 " Token/cost usage: by default today's, with its sessions and the plan limits.
 function! s:ClaudePlan(args)
-  let args = empty(a:args) ? ['today', '-l', '-s'] : split(a:args)
+  let args = empty(a:args) ? ['today', '-l', '-s'] : s:UsageArgs(a:args)
   call init#OnJobOutput([s:cc_usage] + args, expand('<SID>') .. 'OnUsage')
+endfunction
+
+" The period can be a phrase: ':Plan last friday -s' -> ['last friday', '-s'].
+function! s:UsageArgs(args)
+  let words = split(a:args)
+  let n = 0
+  while n < len(words) && words[n][0] !=# '-'
+    let n += 1
+  endwhile
+  return n > 1 ? [join(words[: n - 1])] + words[n :] : words
 endfunction
 
 function! s:OnUsage(data)

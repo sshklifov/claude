@@ -165,25 +165,24 @@ function! s:MakePrompt(args, root, first, last)
   return printf("%s\n%s", a:args, context)
 endfunction
 
-" Write the prompt at leisure; closing the buffer sends it off (empty: cancel).
+" Write the prompt at leisure; :w sends it off, :q! throws it away.
 function! s:ClaudePromptBuffer(text, root)
   below sp
-  enew
-  setlocal buftype=nofile bufhidden=wipe noswapfile
-  file claude-prompt
-  call setline(1, split(a:text, "\n", v:true))
-  call init#OnBufDelete(bufnr(), expand('<SID>') .. 'SendPrompt', bufnr(), a:root)
-  call cursor(1, 1)
-  startinsert!
+  call init#BufInput('claude-prompt', #{lines: split(a:text, "\n", v:true),
+        \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},
+        \ expand('<SID>') .. 'SendPrompt', a:root)
 endfunction
 
-function! s:SendPrompt(nr, root)
-  let text = trim(join(getbufline(a:nr, 1, '$'), "\n"))
-  if empty(text)
-    return
+" :w sends and closes, so there is no second step to remember (empty: cancel).
+function! s:SendPrompt(root)
+  let nr = bufnr()
+  let text = trim(join(getline(1, '$'), "\n"))
+  setlocal nomodified
+  exe 'bwipeout ' .. nr
+  if !empty(text)
+    " We're still inside the write: open the terminal once it has settled.
+    call timer_start(0, {-> s:OpenClaudeTerm([text], a:root)})
   endif
-  " We're still inside the wipeout: open the terminal once it has settled.
-  call timer_start(0, {-> s:OpenClaudeTerm([text], a:root)})
 endfunction
 
 function! s:ClaudeInteractive(args) range

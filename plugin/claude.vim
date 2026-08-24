@@ -15,25 +15,23 @@ if !exists('g:claude_executable')
   let g:claude_executable = s:FindClaudeExecutable()
 endif
 
-" bufnr() when we're on a file of a:root, else -1. A resumed session opens in
-" its own project, which needn't be the one we are sitting in, and claude#Api()
-" must not run there.
-function! s:ProjectBuf(root)
-  return &buftype == '' && stridx(expand('%:p'), a:root) == 0 ? bufnr() : -1
+" The topmost window on a file of a:root, else 0. Windows are numbered top-down,
+" and claude sits in a bottom split, so the first hit is the one above us.
+function! s:CodingWin(root)
+  let wins = filter(range(1, winnr('$')),
+        \ 'getbufvar(winbufnr(v:val), "&buftype") == ""
+        \  && stridx(getbufinfo(winbufnr(v:val))[0].name, a:root) == 0')
+  return empty(wins) ? 0 : win_getid(wins[0])
 endfunction
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 function! s:OpenClaudeTerm(args, root)
-  let coding_win = win_getid()
-  let coding_buf = s:ProjectBuf(a:root)
   below sp
   enew
-  " Claude gets its own buffer number, so claude#Api() can find b:coding_buf.
+  " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
   call init#Termopen([g:claude_executable] + a:args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
   let b:root_dir = a:root
-  let b:coding_win = coding_win
-  let b:coding_buf = coding_buf
   " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
   setlocal winfixwidth winfixheight
   " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
@@ -131,16 +129,12 @@ function! s:ClaudeOpenRef()
     return init#Warn("ClaudeOpen: no such file: %s", fullname)
   endif
 
-  " Return to the coding window we opened from; recreate it if it's gone.
-  let claude_buf = bufnr()
-  if !win_gotoid(get(b:, 'coding_win', 0))
+  " Go to a window already on the project; open one if there is none.
+  if !win_gotoid(s:CodingWin(root))
     " Split off the top, not off us: splitting here would resize the pty.
     topleft sp
-    call setbufvar(claude_buf, 'coding_win', win_getid())
   endif
   exe 'edit ' .. fnameescape(fullname)
-  " Keep claude#Api() pointed at the file we last opened for it.
-  call setbufvar(claude_buf, 'coding_buf', s:ProjectBuf(root))
   let lnum = s:FindSourceLine(lnum, text)
   exe 'normal ' .. lnum .. 'G'
   normal z.
@@ -303,36 +297,36 @@ function! s:RunIn(bufnr, cmd)
         \ function() return vim.fn.execute(_A[2]) end)', [a:bufnr, a:cmd]))
 endfunction
 
-" The buffer claude works in: the file it was opened on, else anything still
-" loaded from the same project, so a fallback can't leave it.
+" The buffer claude works in: the project file used most recently, i.e. the one
+" claude was opened on until someone moves on, else claude's own terminal. Every
+" candidate belongs to b:root_dir, so this can't wander into another project.
 function! s:CodingBuf(termbuf)
-  " Never 0, here or as "none": every lookup would read whatever buffer happens
-  " to be current instead.
-  if a:termbuf <= 0
+  " Never 0: there is no "no buffer" to run in, and 0 would read whatever the
+  " user happens to be sitting on, in whatever project that is.
+  if a:termbuf <= 0 || !bufexists(a:termbuf)
     return -1
-  endif
-  let buf = getbufvar(a:termbuf, 'coding_buf', -1)
-  if buf > 0 && bufloaded(buf)
-    return buf
   endif
   let root = getbufvar(a:termbuf, 'root_dir', '')
   if empty(root)
-    return -1
+    return a:termbuf
   endif
   let bufs = filter(getbufinfo(#{bufloaded: 1, buflisted: 1}),
         \ 'getbufvar(v:val.bufnr, "&buftype") == "" && stridx(v:val.name, root) == 0')
-  return empty(bufs) ? -1 : bufs[0].bufnr
+  " lastused ticks in whole seconds, so ties are common: newest buffer wins.
+  call sort(bufs, {a, b -> a.lastused != b.lastused
+        \ ? b.lastused - a.lastused : b.bufnr - a.bufnr})
+  return empty(bufs) ? a:termbuf : bufs[0].bufnr
 endfunction
 
 " Run a:cmd for claude, over `nvim --server $NVIM --remote-expr`, and answer with
 " its output as json. Ask for data by echoing it: `echo json_encode(getwininfo())`.
 " a:1 is claude's own terminal buffer, which it knows as $CLAUDE_BUF; with no
-" coding buffer left we run nothing at all rather than pick something.
+" file left to work in we fall back to that terminal, never to the current buffer.
 function! claude#Api(cmd, ...)
   let termbuf = str2nr(get(a:000, 0, 0))
   let buf = s:CodingBuf(termbuf)
   if buf <= 0
-    let out = printf('claude#Api: claude session %d has no file to work in', termbuf)
+    let out = printf('claude#Api: %d is not a claude session buffer', termbuf)
   else
     try
       let out = s:RunIn(buf, a:cmd)

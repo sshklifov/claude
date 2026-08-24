@@ -21,10 +21,13 @@ another instance to poke at.
 nvim --server "$NVIM" --remote-expr "claude#Api('<command>', $CLAUDE_BUF)"
 ```
 
-The command runs in the context of the file `:Claude` was opened on, or the one
-it last opened for me (`b:coding_buf`), so `%`, the cwd and `FugitiveWorkTree()`
-mean what I expect. That context is a *buffer*, not a window — it survives the
-window closing, and can't quietly become a different file the way a window can.
+The command runs in the context of the most recently used file of my project —
+the one `:Claude` was opened on, until they move to another. So `%` and
+`FugitiveWorkTree()` mean what I expect, but `%` is *their* current file, not a
+fact I set. With no project file loaded it falls back to my own terminal buffer:
+global queries still work, `%` is then `term://…`. Check `%` when it matters.
+That context is a *buffer*, not a window — it survives the window closing, and
+can't quietly become a different file the way a window can.
 The answer is the command's output, json-encoded — decode it once and it's
 exactly what vim echoed.
 
@@ -52,10 +55,8 @@ double-quoted string escape nested quotes as `\"`. Keep the outer
 
 - `"…"` — the output. Empty string means the command said nothing, which for
   most `:commands` is success.
-- `"claude#Api: claude session N has no file to work in"` — the file `:Claude`
-  was opened on is gone and nothing else from the project is loaded, so there is
-  no honest context left. Nothing ran, by design. Tell the user; don't retry
-  elsewhere.
+- `"claude#Api: N is not a claude session buffer"` — `$CLAUDE_BUF` was wrong or
+  its terminal is gone. Nothing ran. Check the variable; don't retry elsewhere.
 - `"Vim:E492: Not an editor command: …"` and friends — my command was wrong,
   not their editor. Fix it and retry.
 

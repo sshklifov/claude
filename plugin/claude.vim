@@ -44,6 +44,14 @@ function! s:OpenClaudeTerm(args, root)
   nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> <C-l> <cmd>call <SID>TrimScrollback()<CR>
+  " The plan limits, kept current by the one monitor all sessions share.
+  setlocal statusline=%{%claude#Limits()%}
+  call s:CheckLimits()
+  " Percentages rot, the 5-hour one fastest. Every prompt and every line claude
+  " prints changes this buffer, so that is our "something happened" event.
+  augroup ClaudeLimits
+    exe printf('autocmd BufEnter,TextChangedT <buffer=%d> call s:CheckLimits()', bufnr())
+  augroup END
   startinsert
 endfunction
 
@@ -292,6 +300,56 @@ function! s:OnUsage(data)
 endfunction
 
 command! -nargs=* Plan call s:ClaudePlan(<q-args>)
+
+" Zones for the limits statusline, as a percentage of a plan window.
+let g:claude_limit_yellow = get(g:, 'claude_limit_yellow', 70)
+let g:claude_limit_red = get(g:, 'claude_limit_red', 90)
+
+" How close the plan windows are: knowing you are one prompt from the 5-hour
+" wall is worth having in front of you, not a :Plan away. It goes in the
+" session's statusline -- showmode's -- TERMINAL -- wipes any cmdline message,
+" and a winbar would take a screen line, resizing (and tearing) the pty.
+"
+" The windows are account-wide, so all sessions read one figure: whoever asks
+" first pays for it, the rest just redraw. This is what their statusline calls.
+let s:limits_sl = ''
+
+function! claude#Limits()
+  return s:limits_sl
+endfunction
+
+" Claude redraws many times a second, so throttle; the snapshot behind this is
+" only refetched every 5 minutes anyway (see cc-usage), so a minute is plenty.
+let s:limit_interval = 60
+let s:limits_at = 0
+
+function! s:CheckLimits()
+  if localtime() - s:limits_at < s:limit_interval
+    return
+  endif
+  let s:limits_at = localtime()
+  call init#OnJobOutput([s:cc_usage, '--brief'], expand('<SID>') .. 'OnLimits')
+endfunction
+
+function! s:OnLimits(data)
+  " Rows of `name<TAB>percent<TAB>resets`, tightest first; none means no data.
+  let rows = map(filter(copy(a:data), '!empty(v:val)'), 'split(v:val, "\t", v:true)')
+  call filter(rows, 'len(v:val) >= 3')
+  if empty(rows)
+    return
+  endif
+  let worst = str2nr(rows[0][1])
+  let hl = worst >= g:claude_limit_red ? 'ErrorMsg'
+        \ : worst >= g:claude_limit_yellow ? 'WarningMsg' : 'MoreMsg'
+  " The reset time only matters once a window is tight enough to wait on.
+  let msg = join(map(copy(rows),
+        \ 'printf("[%s %d%%%s]", v:val[0], str2nr(v:val[1]),
+        \   str2nr(v:val[1]) >= g:claude_limit_yellow && !empty(v:val[2])
+        \     ? ", " .. v:val[2] : "")'), ' ')
+  " In a statusline a % is an escape; ours are literal text.
+  let s:limits_sl = '%#' .. hl .. '#' .. substitute(msg, '%', '%%', 'g') .. '%*'
+  redrawstatus!
+endfunction
 " }}}
 
 """"""""""""""""""""""""""""Claude remote API"""""""""""""""""""""""""""" {{{

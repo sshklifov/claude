@@ -199,6 +199,13 @@ KIND_NAMES = {
     "weekly_oauth_apps": "weekly (OAuth apps)", "weekly_cowork": "weekly (Cowork)",
 }
 
+# The same windows, short enough for a one-line status message.
+BRIEF_NAMES = {
+    "session": "5 Hour", "weekly_all": "Week", "weekly_opus": "Week Opus",
+    "weekly_sonnet": "Week Sonnet", "weekly_oauth_apps": "Week Apps",
+    "weekly_cowork": "Week Cowork",
+}
+
 
 def bar(pct, width=28):
     pct = max(0, min(100, int(pct or 0)))
@@ -308,8 +315,8 @@ def is_stale(snap, max_age_min=5):
     return False
 
 
-def show_limits(refresh=True):
-    """Plan limit windows, refreshed from the same endpoint /usage uses."""
+def snapshot(refresh=True):
+    """The newest snapshot, refetched if stale, as (snapshot, account, error)."""
     cu, acct = cached_snapshot()
     fetch_err = None
     if refresh and is_stale(cu):
@@ -323,6 +330,41 @@ def show_limits(refresh=True):
         if fresh:
             cu = {"fetchedAtMs": int(datetime.now().timestamp() * 1000),
                   "utilization": fresh}
+    return cu, acct, fetch_err
+
+
+def limit_windows(u):
+    """The window rows of a utilization payload, new shape or old."""
+    rows = u.get("limits") or []
+    if not rows:                     # older shape: explicit window keys
+        rows = [{"kind": k, "percent": (u.get(k) or {}).get("utilization"),
+                 "resets_at": (u.get(k) or {}).get("resets_at")}
+                for k in ("five_hour", "seven_day") if u.get(k)]
+    return [r for r in rows if r.get("percent") is not None]
+
+
+def brief_limits(refresh=True):
+    """One tab-separated row per window, tightest first: name, percent, resets.
+    Says nothing at all when there is no data: the caller has nothing to show."""
+    cu, _, _ = snapshot(refresh)
+    now = datetime.now().astimezone()
+    rows = []
+    for r in limit_windows(cu.get("utilization") or {}):
+        when = ""
+        try:
+            rt = datetime.fromisoformat(r["resets_at"]).astimezone()
+            when = "stale" if rt < now else rel(rt, now)
+        except (KeyError, TypeError, ValueError):
+            pass
+        rows.append((BRIEF_NAMES.get(r.get("kind"), r.get("kind") or "?"),
+                     int(r["percent"]), when))
+    for name, pct, when in sorted(rows, key=lambda r: -r[1]):
+        print(f"{name}\t{pct}\t{when}")
+
+
+def show_limits(refresh=True):
+    """Plan limit windows, refreshed from the same endpoint /usage uses."""
+    cu, acct, fetch_err = snapshot(refresh)
     u = cu.get("utilization") or {}
     now = datetime.now().astimezone()
 
@@ -343,17 +385,10 @@ def show_limits(refresh=True):
         print("live, just fetched" if age < 10
               else f"snapshot taken {rel(snap, now)} ({snap:%Y-%m-%d %H:%M})")
 
-    rows = u.get("limits") or []
-    if not rows:                     # older shape: explicit window keys
-        rows = [{"kind": k, "percent": (u.get(k) or {}).get("utilization"),
-                 "resets_at": (u.get(k) or {}).get("resets_at")}
-                for k in ("five_hour", "seven_day") if u.get(k)]
     print()
     stale = False
-    for r in rows:
-        pct = r.get("percent")
-        if pct is None:
-            continue
+    for r in limit_windows(u):
+        pct = r["percent"]
         name = KIND_NAMES.get(r.get("kind"), r.get("kind") or "?")
         note = ""
         ra = r.get("resets_at")
@@ -532,11 +567,16 @@ def main():
                     help="hide the session list")
     ap.add_argument("-l", "--limits", action="store_true",
                     help="also show plan limit windows")
+    ap.add_argument("-b", "--brief", action="store_true",
+                    help="just the limit windows, tab-separated, tightest first")
     ap.add_argument("-j", "--json", action="store_true", help="machine-readable output")
     ap.add_argument("-R", "--no-refresh", action="store_true",
                     help="never call the usage endpoint; use the cached snapshot")
     a = ap.parse_args()
 
+    if a.brief:
+        brief_limits(refresh=not a.no_refresh)
+        return
     if a.when == "limits":
         show_limits(refresh=not a.no_refresh)
         return

@@ -47,12 +47,16 @@ function! s:OpenClaudeTerm(args, root)
   startinsert
 endfunction
 
-" Experimental: scrollback isn't reflown on resize, so it tears. Drop it all,
-" keeping the live screen.
+" Experimental: scrollback isn't reflown on resize, so it tears. Trimming alone
+" leaves the torn rows that are still on the live screen, so first make claude
+" repaint it with its own Ctrl-L, then drop everything the repaint pushed up.
 function! s:TrimScrollback()
+  let buf = bufnr()
   let keep = &l:scrollback
-  setlocal scrollback=1
-  let &l:scrollback = keep
+  call chansend(&channel, "\<C-l>")
+  " The repaint scrolls the old screen out first: trim once it has landed.
+  call timer_start(50, {-> s:RunIn(buf,
+        \ printf('setlocal scrollback=1 | setlocal scrollback=%d', keep))})
 endfunction
 
 " Jump a:n lines of a:lnums forward, or backward if a:n is negative.

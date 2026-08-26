@@ -60,6 +60,27 @@ double-quoted string escape nested quotes as `\"`. Keep the outer
 - `"Vim:E492: Not an editor command: …"` and friends — my command was wrong,
   not their editor. Fix it and retry.
 
+## Building and syncing
+
+`:Make` and `:Sync` take their tree from the current buffer, so they act on the
+repo they are editing, not the one I was asked to work on. Don't touch the
+commands — call the functions with the tree given, and I get their SDK
+environment, their quickfix and their statusline instead of a cmake line of my
+own:
+
+```sh
+claude#Api('call qutil#Make(work#GetMakeCommand("/home/stef/bd-video"), #{cwd: "/home/stef/bd-video"})', $CLAUDE_BUF)
+claude#Api('call work#SyncOne("!", "/home/stef/bd-video/Debug", "application/rtsp-server")', $CLAUDE_BUF)
+```
+
+- `work#GetMakeCommand([tree])` defaults to `FugitiveWorkTree()`. Pass `cwd` to
+  `qutil#Make` as well, or the quickfix resolves relative paths against the tree
+  being edited.
+- `work#SyncOne(bang, <tree>/<g:BUILD_TYPE>, exe)` rsyncs one executable to
+  `g:HOST:g:RSYNC_DIR` and leaves the command to run it on their clipboard. It
+  refuses while that exe's service is active unless bang — read the unit's state
+  before reaching for `!`, and see the house rules: a device is outward-facing.
+
 ## Async commands
 
 Anything job-backed (`:Make`) returns long before it finishes. There is no

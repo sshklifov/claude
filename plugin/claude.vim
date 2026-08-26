@@ -15,6 +15,29 @@ if !exists('g:claude_executable')
   let g:claude_executable = s:FindClaudeExecutable()
 endif
 
+" Claude only finds skills under ~/.claude/skills, but ours ships with the
+" plugin: opt in and we link it there, so a fresh machine needs no `ln -s`.
+let s:skill = expand('<sfile>:p:h:h') .. '/skills/nvim'
+
+function! s:InstallSkill()
+  if !get(g:, 'claude_install_skill', v:false)
+    return
+  endif
+  let link = expand('~/.claude/skills/nvim')
+  if !empty(getftype(link))
+    return
+  endif
+  call mkdir(fnamemodify(link, ':h'), 'p')
+  " Vimscript has no symlink(): ln does, and tells us why if it won't.
+  let out = system(['ln', '-s', s:skill, link])
+  if v:shell_error
+    call init#Warn("Claude: could not link the skill: %s", trim(out))
+  endif
+endfunction
+
+" Plugin options are usually set after the plugins load, so ask once we're up.
+autocmd VimEnter * ++once call s:InstallSkill()
+
 " The topmost window on a file of a:root, else 0. Windows are numbered top-down,
 " and claude sits in a bottom split, so the first hit is the one above us.
 function! s:CodingWin(root)

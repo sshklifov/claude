@@ -67,6 +67,31 @@ def price(model, fast):
     return PRICES.get(model) or (5.0, 25.0)  # unknown model -> assume opus tier
 
 
+def bucket_of(u, model):
+    """Tokens and API-list cost of one request's usage block."""
+    cc = u.get("cache_creation") or {}
+    b = Bucket()
+    b.reqs = 1
+    b.inp = u.get("input_tokens", 0) or 0
+    b.out = u.get("output_tokens", 0) or 0
+    b.cr = u.get("cache_read_input_tokens", 0) or 0
+    b.cw1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
+    b.cw5 = cc.get("ephemeral_5m_input_tokens", 0) or 0
+    if not cc:
+        b.cw5 = u.get("cache_creation_input_tokens", 0) or 0
+    b.think = ((u.get("output_tokens_details") or {})
+               .get("thinking_tokens", 0) or 0)
+    b.web = ((u.get("server_tool_use") or {})
+             .get("web_search_requests", 0) or 0)
+    pin, pout = price(model, u.get("speed") == "fast")
+    b.cost = (b.inp * pin
+              + b.out * pout
+              + b.cr * pin * CACHE_READ_MULT
+              + b.cw5 * pin * CACHE_5M_MULT
+              + b.cw1h * pin * CACHE_1H_MULT) / 1e6
+    return b
+
+
 PROMPT_SOURCES = ("typed", "queued", "suggestion_accepted")
 SKIP_PREFIXES = ("<", "[Request interrupted", "Caveat:", "API Error", "This session is")
 
@@ -168,26 +193,7 @@ def collect(since=None, until=None):
                 if (since and day < since) or (until and day > until):
                     continue
 
-                cc = u.get("cache_creation") or {}
-                b = Bucket()
-                b.reqs = 1
-                b.inp = u.get("input_tokens", 0) or 0
-                b.out = u.get("output_tokens", 0) or 0
-                b.cr = u.get("cache_read_input_tokens", 0) or 0
-                b.cw1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
-                b.cw5 = cc.get("ephemeral_5m_input_tokens", 0) or 0
-                if not cc:
-                    b.cw5 = u.get("cache_creation_input_tokens", 0) or 0
-                b.think = ((u.get("output_tokens_details") or {})
-                           .get("thinking_tokens", 0) or 0)
-                b.web = ((u.get("server_tool_use") or {})
-                         .get("web_search_requests", 0) or 0)
-                pin, pout = price(model, u.get("speed") == "fast")
-                b.cost = (b.inp * pin
-                          + b.out * pout
-                          + b.cr * pin * CACHE_READ_MULT
-                          + b.cw5 * pin * CACHE_5M_MULT
-                          + b.cw1h * pin * CACHE_1H_MULT) / 1e6
+                b = bucket_of(u, model)
                 recs.append((day, sid, project, model, bool(d.get("isSidechain")), b,
                              cwd or project))
     return recs, sess_first, sess_meta, sess_desc
@@ -341,6 +347,40 @@ def limit_windows(u):
                  "resets_at": (u.get(k) or {}).get("resets_at")}
                 for k in ("five_hour", "seven_day") if u.get(k)]
     return [r for r in rows if r.get("percent") is not None]
+
+
+def session_cost(cwd):
+    """Cost so far of the live session in cwd, as plain dollars.
+
+    Claude appends to its transcript and closes it, so there is no open fd to
+    follow back from the terminal to a session id: derive it instead, as the
+    file written last in this project's transcript dir."""
+    d = ROOT / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    files = list(d.glob("*.jsonl")) if d.is_dir() else []
+    if not files:
+        return
+    total, seen = 0.0, set()
+    with max(files, key=lambda f: f.stat().st_mtime).open(
+            encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if '"usage"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            u, model = msg.get("usage"), norm_model(msg.get("model"))
+            if not u or not model or model == "<synthetic>":
+                continue
+            key = rec.get("uuid") or (rec.get("requestId"), rec.get("timestamp"))
+            if key in seen:
+                continue
+            seen.add(key)
+            total += bucket_of(u, model).cost
+    print(f"{total:.2f}")
 
 
 def brief_limits(refresh=True):
@@ -569,11 +609,16 @@ def main():
                     help="also show plan limit windows")
     ap.add_argument("-b", "--brief", action="store_true",
                     help="just the limit windows, tab-separated, tightest first")
+    ap.add_argument("-c", "--session-cost", metavar="DIR",
+                    help="just the cost so far of DIR's live session, in dollars")
     ap.add_argument("-j", "--json", action="store_true", help="machine-readable output")
     ap.add_argument("-R", "--no-refresh", action="store_true",
                     help="never call the usage endpoint; use the cached snapshot")
     a = ap.parse_args()
 
+    if a.session_cost:
+        session_cost(a.session_cost)
+        return
     if a.brief:
         brief_limits(refresh=not a.no_refresh)
         return

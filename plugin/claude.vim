@@ -67,13 +67,13 @@ function! s:OpenClaudeTerm(args, root)
   nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> <C-l> <cmd>call <SID>TrimScrollback()<CR>
-  " The plan limits, kept current by the one monitor all sessions share.
-  setlocal statusline=%{%claude#Limits()%}
-  call s:CheckLimits()
+  " The plan limits, shared by all sessions, then this session's own cost.
+  setlocal statusline=%{%claude#Limits()%}%{%claude#Cost()%}
+  call s:CheckUsage()
   " Percentages rot, the 5-hour one fastest. Every prompt and every line claude
   " prints changes this buffer, so that is our "something happened" event.
   augroup ClaudeLimits
-    exe printf('autocmd BufEnter,TextChangedT <buffer=%d> call s:CheckLimits()', bufnr())
+    exe printf('autocmd BufEnter,TextChangedT <buffer=%d> call s:CheckUsage()', bufnr())
   augroup END
   startinsert
 endfunction
@@ -341,10 +341,21 @@ function! claude#Limits()
   return s:limits_sl
 endfunction
 
+" What this session has run up at API list prices; per buffer, unlike the
+" limits, so the statusline reads it off the terminal it is drawing.
+function! claude#Cost()
+  return get(b:, 'claude_cost_sl', '')
+endfunction
+
 " Claude redraws many times a second, so throttle; the snapshot behind this is
 " only refetched every 5 minutes anyway (see cc-usage), so a minute is plenty.
 let s:limit_interval = 60
 let s:limits_at = 0
+
+function! s:CheckUsage()
+  call s:CheckLimits()
+  call s:CheckCost()
+endfunction
 
 function! s:CheckLimits()
   if localtime() - s:limits_at < s:limit_interval
@@ -352,6 +363,25 @@ function! s:CheckLimits()
   endif
   let s:limits_at = localtime()
   call init#OnJobOutput([s:cc_usage, '--brief'], expand('<SID>') .. 'OnLimits')
+endfunction
+
+" Throttled per buffer, not account-wide: each session bills its own.
+function! s:CheckCost()
+  if localtime() - get(b:, 'claude_cost_at', 0) < s:limit_interval
+    return
+  endif
+  let b:claude_cost_at = localtime()
+  call init#OnJobOutput([s:cc_usage, '-c', b:root_dir],
+        \ expand('<SID>') .. 'OnCost', bufnr())
+endfunction
+
+function! s:OnCost(bufnr, data)
+  let cost = trim(get(a:data, 0, ''))
+  if empty(cost)
+    return
+  endif
+  call setbufvar(a:bufnr, 'claude_cost_sl', printf(' [$%s]', cost))
+  redrawstatus!
 endfunction
 
 function! s:OnLimits(data)

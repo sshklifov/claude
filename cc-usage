@@ -349,19 +349,25 @@ def limit_windows(u):
     return [r for r in rows if r.get("percent") is not None]
 
 
-def session_cost(cwd):
+def session_cost(cwd, session_id=None):
     """Cost so far of the live session in cwd, as plain dollars.
 
     Claude appends to its transcript and closes it, so there is no open fd to
-    follow back from the terminal to a session id: derive it instead, as the
-    file written last in this project's transcript dir."""
+    follow back from the terminal to a session id. Given one already (e.g.
+    `--resume ID`) we read its transcript directly. Otherwise guess: the file
+    written last in this project's transcript dir."""
     d = ROOT / re.sub(r"[^A-Za-z0-9]", "-", cwd)
-    files = list(d.glob("*.jsonl")) if d.is_dir() else []
-    if not files:
-        return
+    if session_id:
+        f = d / f"{session_id}.jsonl"
+        if not f.is_file():
+            return
+    else:
+        files = list(d.glob("*.jsonl")) if d.is_dir() else []
+        if not files:
+            return
+        f = max(files, key=lambda p: p.stat().st_mtime)
     total, seen = 0.0, set()
-    with max(files, key=lambda f: f.stat().st_mtime).open(
-            encoding="utf-8", errors="replace") as fh:
+    with f.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             if '"usage"' not in line:
                 continue
@@ -611,13 +617,15 @@ def main():
                     help="just the limit windows, tab-separated, tightest first")
     ap.add_argument("-c", "--session-cost", metavar="DIR",
                     help="just the cost so far of DIR's live session, in dollars")
+    ap.add_argument("--session-id", metavar="ID",
+                    help="with -c, that session's transcript, no guessing")
     ap.add_argument("-j", "--json", action="store_true", help="machine-readable output")
     ap.add_argument("-R", "--no-refresh", action="store_true",
                     help="never call the usage endpoint; use the cached snapshot")
     a = ap.parse_args()
 
     if a.session_cost:
-        session_cost(a.session_cost)
+        session_cost(a.session_cost, session_id=a.session_id)
         return
     if a.brief:
         brief_limits(refresh=not a.no_refresh)

@@ -55,6 +55,17 @@ function! s:OpenClaudeTerm(args, root)
   call init#Termopen([g:claude_executable] + a:args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
   let b:root_dir = a:root
+  if a:args[0] ==# '--resume'
+    " Known outright: read that transcript directly instead of guessing.
+    let b:claude_session_id = a:args[1]
+  else
+    " Nothing written yet for a session that just started: show $0 rather
+    " than guess and risk picking up a sibling session's transcript in the
+    " same project. The first throttled check (see s:CheckCost) will have
+    " its own transcript to find by then.
+    let b:claude_cost_sl = ' [$0.00]'
+    let b:claude_cost_at = localtime()
+  endif
   " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
   setlocal winfixwidth winfixheight
   " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
@@ -371,8 +382,13 @@ function! s:CheckCost()
     return
   endif
   let b:claude_cost_at = localtime()
-  call init#OnJobOutput([s:cc_usage, '-c', b:root_dir],
-        \ expand('<SID>') .. 'OnCost', bufnr())
+  let cmd = [s:cc_usage, '-c', b:root_dir]
+  " Known outright for a resumed session; a fresh one is still guessed by
+  " last touched in this project (fine once it has actually been used).
+  if !empty(get(b:, 'claude_session_id', ''))
+    let cmd += ['--session-id', b:claude_session_id]
+  endif
+  call init#OnJobOutput(cmd, expand('<SID>') .. 'OnCost', bufnr())
 endfunction
 
 function! s:OnCost(bufnr, data)

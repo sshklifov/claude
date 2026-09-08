@@ -89,9 +89,9 @@ function! s:OpenClaudeTerm(args, root)
   startinsert
 endfunction
 
-" Experimental: scrollback isn't reflown on resize, so it tears. Trimming alone
-" leaves the torn rows that are still on the live screen, so first make claude
-" repaint it with its own Ctrl-L, then drop everything the repaint pushed up.
+" Scrollback isn't reflown on resize, so it tears. Trimming alone leaves the
+" torn rows that are still on the live screen, so first make claude repaint it
+" with its own Ctrl-L, then drop everything the repaint pushed up.
 function! s:TrimScrollback()
   let buf = bufnr()
   let keep = &l:scrollback

@@ -205,7 +205,9 @@ function! s:MakePrompt(args, root, first, last)
     if whole_file
       return printf('In %s%s: %s', marker, filename, a:args)
     endif
-    return printf('In %s%s lines %d-%d: %s', marker, filename, a:first, a:last, a:args)
+    let lines = a:first == a:last ? printf('line %d', a:first)
+          \ : printf('lines %d-%d', a:first, a:last)
+    return printf('In %s%s %s: %s', marker, filename, lines, a:args)
   endif
   let context = join(getline(a:first, a:last), "\n")
   return printf("%s\n%s", a:args, context)

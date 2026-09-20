@@ -217,6 +217,10 @@ function! s:ClaudePromptBuffer(text, root)
   call init#BufInput('claude-prompt', #{lines: split(a:text, "\n", v:true),
         \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},
         \ expand('<SID>') .. 'SendPrompt', a:root)
+  " Prose, not code: wrap for reading, and hard-wrap at 120 as you type so
+  " no line grows wider than that regardless of window width.
+  setlocal wrap linebreak breakindent textwidth=120
+  setlocal formatoptions+=a
 endfunction
 
 " :w sends and closes, so there is no second step to remember (empty: cancel).

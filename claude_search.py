@@ -44,9 +44,12 @@ def text_of(msg):
     if isinstance(c, list):
         parts = []
         for b in c:
-            # Skip tool results: file contents would drown out what was said.
-            if isinstance(b, dict) and b.get("type") != "tool_result":
-                parts.append(b.get("text") or json.dumps(b.get("input", "")))
+            # Only plain text: tool_use/tool_result/thinking are never shown
+            # as something said, and tool_use inputs (e.g. a search argument
+            # or a scratch list passed to a subagent) can contain unrelated
+            # words that never appeared in the terminal.
+            if isinstance(b, dict) and b.get("type") == "text":
+                parts.append(b.get("text", ""))
         return " ".join(str(p) for p in parts)
     return ""
 

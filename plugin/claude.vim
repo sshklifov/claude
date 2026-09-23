@@ -413,17 +413,22 @@ function! s:OnLimits(data)
   if empty(rows)
     return
   endif
-  let worst = str2nr(rows[0][1])
-  let hl = worst >= g:claude_limit_red ? 'ErrorMsg'
-        \ : worst >= g:claude_limit_yellow ? 'WarningMsg' : 'MoreMsg'
-  " The reset time only matters once a window is tight enough to wait on.
-  let msg = join(map(copy(rows),
-        \ 'printf("[%s %d%%%s]", v:val[0], str2nr(v:val[1]),
-        \   str2nr(v:val[1]) >= g:claude_limit_yellow && !empty(v:val[2])
-        \     ? ", " .. v:val[2] : "")'), ' ')
-  " In a statusline a % is an escape; ours are literal text.
-  let s:limits_sl = '%#' .. hl .. '#' .. substitute(msg, '%', '%%', 'g') .. '%*'
+  let s:limits_sl = join(map(rows, 's:LimitItem(v:val[0], str2nr(v:val[1]), v:val[2])'), ' ')
   redrawstatus!
+endfunction
+
+" One window, e.g. `[week 85%, Fri 10:00]`, in its own color.
+function! s:LimitItem(name, pct, resets)
+  let hl = a:pct >= g:claude_limit_red ? 'ErrorMsg'
+        \ : a:pct >= g:claude_limit_yellow ? 'WarningMsg' : 'MoreMsg'
+  let text = printf('[%s %d%%', a:name, a:pct)
+  " The reset time only matters once a window is tight enough to wait on.
+  if a:pct >= g:claude_limit_yellow && !empty(a:resets)
+    let text ..= ', ' .. a:resets
+  endif
+  let text ..= ']'
+  " In a statusline a % is an escape; ours are literal text.
+  return '%#' .. hl .. '#' .. substitute(text, '%', '%%', 'g') .. '%*'
 endfunction
 " }}}
 

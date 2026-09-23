@@ -49,8 +49,7 @@ endfunction
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 function! s:OpenClaudeTerm(args, root)
-  below sp
-  enew
+  call init#SmartSplit('below')
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
   call init#Termopen([g:claude_executable] + a:args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
@@ -215,7 +214,7 @@ endfunction
 
 " Write the prompt at leisure; :w sends it off, :q! throws it away.
 function! s:ClaudePromptBuffer(text, root)
-  below sp
+  call init#SmartSplit('below')
   call init#BufInput('claude-prompt', #{lines: split(a:text, "\n", v:true),
         \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},
         \ expand('<SID>') .. 'SendPrompt', a:root)

@@ -249,6 +249,47 @@ function! s:ClaudeInteractive(args) range
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)
+
+" The claude session here, else the first one shown in this tab, else -1.
+function! s:SessionBuf()
+  let bufs = [bufnr()] + tabpagebuflist()
+  call filter(bufs, 'getbufvar(v:val, "&buftype") ==# "terminal"
+        \ && !empty(getbufvar(v:val, "root_dir"))')
+  return get(bufs, 0, -1)
+endfunction
+
+" Plain names for claude's model aliases; anything else goes through as is.
+let g:claude_models = get(g:, 'claude_models', #{
+      \ cheap: 'haiku', fast: 'sonnet', smart: 'opus[1m]', smartest: 'fable'})
+
+" Switch the session at hand; claude's /model also saves it as the default.
+function! s:ClaudeModel(name)
+  let model = get(g:claude_models, a:name, a:name)
+  let buf = s:SessionBuf()
+  if buf < 0
+    " Python keeps the key order and indent that json_encode() would flatten.
+    let set_model = join([
+          \ 'import json, os, sys',
+          \ 'path, model = sys.argv[1:]',
+          \ 'd = json.load(open(path)) if os.path.exists(path) else {}',
+          \ 'd["model"] = model',
+          \ 'open(path, "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")',
+          \ ], "\n")
+    " No session to run /model: save the default where it would have.
+    let out = system(['python3', '-c', set_model, expand('~/.claude/settings.json'), model])
+    if v:shell_error
+      call init#Warn("ClaudeModel: %s", trim(out))
+    endif
+    return
+  endif
+  call chansend(getbufvar(buf, '&channel'), '/model ' .. model .. "\r")
+endfunction
+
+command! -nargs=1 -complete=customlist,s:CompleteModel ClaudeModel call s:ClaudeModel(<q-args>)
+
+function! s:CompleteModel(lead, ...)
+  return filter(sort(keys(g:claude_models)), 'v:val =~# "^" .. a:lead')
+endfunction
 " }}}
 
 """"""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{

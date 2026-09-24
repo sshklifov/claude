@@ -271,19 +271,19 @@ function! s:ClaudeModel(name)
   let model = get(g:claude_models, a:name, a:name)
   let buf = s:SessionBuf()
   if buf < 0
-    " Python keeps the key order and indent that json_encode() would flatten.
-    let set_model = join([
-          \ 'import json, os, sys',
-          \ 'path, model = sys.argv[1:]',
-          \ 'd = json.load(open(path)) if os.path.exists(path) else {}',
-          \ 'd["model"] = model',
-          \ 'open(path, "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")',
-          \ ], "\n")
-    " No session to run /model: save the default where it would have.
-    let out = system(['python3', '-c', set_model, expand('~/.claude/settings.json'), model])
-    if v:shell_error
-      call init#Warn("ClaudeModel: %s", trim(out))
+    " No session to run /model: save the default where it would have. Edit the
+    " text in place, since json_encode() would flatten the file to one line.
+    let path = expand('~/.claude/settings.json')
+    let text = filereadable(path) ? join(readfile(path), "\n") : "{\n}"
+    let entry = '"model": ' .. json_encode(model)
+    if text =~# '"model":\s*"[^"]*"'
+      let text = substitute(text, '"model":\s*"[^"]*"', '\=entry', '')
+    else
+      " First key, then drop the comma if it was the only one.
+      let text = substitute(text, '{', '\="{\n  " .. entry .. ","', '')
+      let text = substitute(text, ',\(\_s*}\)', '\1', '')
     endif
+    call writefile(split(text, "\n", v:true), path)
     return
   endif
   call chansend(getbufvar(buf, '&channel'), '/model ' .. model .. "\r")

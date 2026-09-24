@@ -214,6 +214,10 @@ endfunction
 
 " Write the prompt at leisure; :w sends it off, :q! throws it away.
 function! s:ClaudePromptBuffer(text, root)
+  " One draft at a time: its name is taken until it is sent or dropped.
+  if win_gotoid(get(win_findbuf(bufnr('^claude-prompt$')), 0))
+    return init#Warn("Claude: finish this prompt first (:w sends, :q! drops)")
+  endif
   call init#SmartSplit('below')
   call init#BufInput('claude-prompt', #{lines: split(a:text, "\n", v:true),
         \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},

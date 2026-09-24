@@ -350,7 +350,8 @@ def limit_windows(u):
 
 
 def session_cost(cwd, session_id=None):
-    """Cost so far of the live session in cwd, as plain dollars.
+    """Cost so far of the live session in cwd, as plain dollars, then a tab
+    and the model it last answered with, and when (epoch seconds).
 
     Claude appends to its transcript and closes it, so there is no open fd to
     follow back from the terminal to a session id. Given one already (e.g.
@@ -366,7 +367,7 @@ def session_cost(cwd, session_id=None):
         if not files:
             return
         f = max(files, key=lambda p: p.stat().st_mtime)
-    total, seen = 0.0, set()
+    total, seen, last, at = 0.0, set(), "", 0
     with f.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             if '"usage"' not in line:
@@ -386,7 +387,10 @@ def session_cost(cwd, session_id=None):
                 continue
             seen.add(key)
             total += bucket_of(u, model).cost
-    print(f"{total:.2f}")
+            last, at = model, rec.get("timestamp") or ""
+    if at:
+        at = int(datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp())
+    print(f"{total:.2f}\t{last}\t{at}")
 
 
 def brief_limits(refresh=True):

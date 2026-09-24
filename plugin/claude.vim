@@ -77,8 +77,9 @@ function! s:OpenClaudeTerm(args, root)
   nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> <C-l> <cmd>call <SID>TrimScrollback()<CR>
-  " The plan limits, shared by all sessions, then this session's own cost.
-  setlocal statusline=%{%claude#Limits()%}%{%claude#Cost()%}
+  " The plan limits, shared by all sessions, then this session's own cost and
+  " model in the middle.
+  setlocal statusline=%{%claude#Limits()%}%{claude#Middle()}
   call s:CheckUsage()
   " Percentages rot, the 5-hour one fastest. Every prompt and every line claude
   " prints changes this buffer, so that is our "something happened" event.
@@ -287,6 +288,10 @@ function! s:ClaudeModel(name)
     return
   endif
   call chansend(getbufvar(buf, '&channel'), '/model ' .. model .. "\r")
+  " The transcript only learns of it with the next reply: show it till then.
+  call setbufvar(buf, 'claude_model', model)
+  call setbufvar(buf, 'claude_model_at', localtime())
+  redrawstatus!
 endfunction
 
 command! -nargs=1 -complete=customlist,s:CompleteModel ClaudeModel call s:ClaudeModel(<q-args>)
@@ -408,6 +413,16 @@ function! claude#Cost()
   return get(b:, 'claude_cost_sl', '')
 endfunction
 
+" Cost and model, padded out to the window's middle past what the limits took.
+function! claude#Middle()
+  let text = trim(claude#Cost() .. ' ' .. get(b:, 'claude_model', ''))
+  " Only the visible text counts: drop highlight groups, unescape %%.
+  let left = substitute(claude#Limits(), '%#[^#]*#\|%\*', '', 'g')
+  let left = strdisplaywidth(substitute(left, '%%', '%', 'g'))
+  let mid = (winwidth(get(g:, 'statusline_winid', 0)) - strdisplaywidth(text)) / 2
+  return repeat(' ', max([1, mid - left])) .. text
+endfunction
+
 " Claude redraws many times a second, so throttle; the snapshot behind this is
 " only refetched every 5 minutes anyway (see cc-usage), so a minute is plenty.
 let s:limit_interval = 60
@@ -442,11 +457,15 @@ function! s:CheckCost()
 endfunction
 
 function! s:OnCost(bufnr, data)
-  let cost = trim(get(a:data, 0, ''))
+  let [cost, model, at] = split(get(a:data, 0, '') .. "\t\t", "\t", v:true)[:2]
   if empty(cost)
     return
   endif
   call setbufvar(a:bufnr, 'claude_cost_sl', printf(' [$%s]', cost))
+  " A reply from before :ClaudeModel still has the old model.
+  if str2nr(at) >= getbufvar(a:bufnr, 'claude_model_at', 0)
+    call setbufvar(a:bufnr, 'claude_model', substitute(model, '^claude-', '', ''))
+  endif
   redrawstatus!
 endfunction
 

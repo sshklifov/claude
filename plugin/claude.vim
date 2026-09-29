@@ -224,9 +224,11 @@ function! s:ClaudePromptBuffer(text, root)
         \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},
         \ expand('<SID>') .. 'SendPrompt', a:root)
   " Prose, not code: wrap for reading, and hard-wrap at 120 as you type so
-  " no line grows wider than that regardless of window width.
+  " no line grows wider than that regardless of window width. No 'a' in
+  " formatoptions: it reflows the whole paragraph on every edit, pulling the
+  " next line up into the one you are fixing.
   setlocal wrap linebreak breakindent textwidth=120
-  setlocal formatoptions+=a
+  setlocal spell
 endfunction
 
 " :w sends and closes, so there is no second step to remember (empty: cancel).

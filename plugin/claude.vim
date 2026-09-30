@@ -116,8 +116,10 @@ function! s:JumpTo(n, lnums)
   call cursor(lnum, matchend(getline(lnum), '\v^\s*\S\s*') + 1)
 endfunction
 
-" Tool header, e.g. `● Update(path)`, with the path captured.
-let s:tool_header = '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)'
+let s:file_headers = [
+      \ '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)',
+      \ '\v^\s*⎿\s+Updated\s+(\S+)',
+      \ ]
 
 " Lines of the prompts you typed (TUI: `❯ text` at column 1, dup'd by redraws).
 function! s:PromptLines()
@@ -131,9 +133,15 @@ function! s:PromptLines()
   return sort(values(seen), 'n')
 endfunction
 
-" Lines of the tool headers, i.e. where a file was read or changed.
+" Lines of the file headers, i.e. where a file was read or changed.
 function! s:HunkLines()
-  return map(matchbufline('%', s:tool_header, 1, '$'), 'v:val.lnum')
+  let lnums = []
+  for pat in s:file_headers
+    let lnums += map(matchbufline('%', pat, 1, '$'), 'v:val.lnum')
+  endfor
+  call sort(lnums, 'n')
+  " An Update(path) has its own summary right under it: one stop, not two.
+  return filter(copy(lnums), 'v:key == 0 || lnums[v:key - 1] != v:val - 1')
 endfunction
 
 " Line nearest to a:expected_lnum whose trimmed text equals a:text
@@ -145,9 +153,29 @@ function! s:FindSourceLine(expected_lnum, text)
   return empty(nums) ? a:expected_lnum : a:expected_lnum + nums[0]
 endfunction
 
+" The file line a:lnum is a header of, only if it passes every check and names a
+" file that is actually there; else ''.
+function! s:HeaderFile(lnum)
+  let m = filter(map(copy(s:file_headers), 'matchlist(getline(a:lnum), v:val)'), '!empty(v:val)')
+  if empty(m)
+    return ''
+  endif
+  let path = expand(m[0][1])  " resolve a leading ~
+  if path[0] == '/'
+    let found = [path]
+  else
+    " Relative to wherever claude was, so try our root, then the files we
+    " have open or had lately that end in it.
+    let found = [b:root_dir .. '/' .. path]
+          \ + map(getbufinfo(#{buflisted: 1}), 'v:val.name') + v:oldfiles
+    call filter(found, 'v:key == 0 || v:val[-len(path) - 1:] ==# "/" .. path')
+  endif
+  return get(filter(found, 'filereadable(v:val)'), 0, '')
+endfunction
+
 " In a claude diff/file view, take the gutter line number on the current line
-" and the filename from the nearest tool header above, then open there.
-" (Coupled to the TUI format: `Update(path)` headers + a leading line-number
+" and the file from the nearest header above, then open there.
+" (Coupled to the TUI format: see s:file_headers, plus a leading line-number
 " gutter on content lines.)
 function! s:ClaudeOpenRef()
   let raw = getline('.')
@@ -157,23 +185,17 @@ function! s:ClaudeOpenRef()
   endif
   " Code on this line (minus gutter number and diff marker) to verify the jump.
   let text = trim(substitute(raw, '\v^\s*\d+\s*[-+]?', '', ''))
-  let path = ""
+  let fullname = ''
   for i in range(line('.'), 1, -1)
-    let m = matchlist(getline(i), s:tool_header)
-    if !empty(m)
-      let path = m[1]
+    let fullname = s:HeaderFile(i)
+    if !empty(fullname)
       break
     endif
   endfor
-  if empty(path)
+  if empty(fullname)
     return init#Warn("ClaudeOpen: no file header found")
   endif
-  let path = expand(path)  " resolve a leading ~
   let root = b:root_dir
-  let fullname = path[0] == '/' ? path : root .. '/' .. path
-  if !filereadable(fullname)
-    return init#Warn("ClaudeOpen: no such file: %s", fullname)
-  endif
 
   " Go to a window already on the project; open one if there is none.
   if !win_gotoid(s:CodingWin(root))

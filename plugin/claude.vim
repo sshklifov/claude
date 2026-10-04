@@ -261,7 +261,7 @@ function! s:SendPrompt(root)
   exe 'bwipeout ' .. nr
   if !empty(text)
     " We're still inside the write: open the terminal once it has settled.
-    call timer_start(0, {-> s:OpenClaudeTerm([text], a:root)})
+    call timer_start(0, {-> s:OpenClaudeTerm(['--', text], a:root)})
   endif
 endfunction
 
@@ -274,7 +274,8 @@ function! s:ClaudeInteractive(args) range
   if empty(a:args)
     return s:ClaudePromptBuffer(text, root)
   endif
-  call s:OpenClaudeTerm([text], root)
+  " `--` ends the options: a prompt starting with `-` is still a prompt.
+  call s:OpenClaudeTerm(['--', text], root)
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)

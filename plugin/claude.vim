@@ -334,6 +334,7 @@ highlight default link ClaudeResumeTime Number
 highlight default link ClaudeResumeDir Directory
 highlight default link ClaudeResumeId Comment
 highlight default link ClaudeResumePrompt String
+highlight default link ClaudeResumeMatch Search
 
 function! s:ClaudeResume(bang, ...)
   " No args: python lists one row per session (see claude_search.py).
@@ -344,10 +345,29 @@ function! s:ClaudeResume(bang, ...)
     let cmd += ['--path', empty(root) ? getcwd() : root]
   endif
   let cmd += a:000
-  call init#OnJobOutput(cmd, expand('<SID>') .. 'OnSearchResults')
+  call init#OnJobOutput(cmd, expand('<SID>') .. 'OnSearchResults', a:000)
 endfunction
 
-function! s:OnSearchResults(data)
+" a:text as chunks, with what a:needles matched (case-insensitively) picked out.
+function! s:MarkNeedles(text, needles)
+  if empty(a:needles)
+    return [[a:text, 'ClaudeResumePrompt']]
+  endif
+  let pat = '\c\V' .. join(map(copy(a:needles), 'escape(v:val, "\\")'), '\|')
+  let chunks = []
+  let pos = 0
+  while 1
+    let [m, start, end] = matchstrpos(a:text, pat, pos)
+    if start < 0
+      break
+    endif
+    let chunks += [[strpart(a:text, pos, start - pos), 'ClaudeResumePrompt'], [m, 'ClaudeResumeMatch']]
+    let pos = end
+  endwhile
+  return filter(chunks + [[a:text[pos :], 'ClaudeResumePrompt']], '!empty(v:val[0])')
+endfunction
+
+function! s:OnSearchResults(needles, data)
   let rows = filter(copy(a:data), '!empty(v:val)')
   if empty(rows)
     echo "ClaudeResume: no matches"
@@ -360,8 +380,7 @@ function! s:OnSearchResults(data)
         \ [printf('%-16s  ', f[2]), 'ClaudeResumeTime'],
         \ [printf('%-30s', f[1]), 'ClaudeResumeDir'],
         \ [printf(' [%s] ', f[0][:4]), 'ClaudeResumeId'],
-        \ [f[4], 'ClaudeResumePrompt'],
-        \ ]})
+        \ ] + s:MarkNeedles(f[4], a:needles)})
   let data = map(copy(fields), '#{id: v:val[0], cwd: v:val[1]}')
   let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:OnResumeSession'))
   call qutil#SetLineData(nr, data)

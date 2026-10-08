@@ -232,6 +232,14 @@ function! s:MakePrompt(args, root, first, last)
     return printf('In %s%s %s: %s', marker, filename, lines, a:args)
   endif
   let context = join(getline(a:first, a:last), "\n")
+  " Linux caps one argv string at 128K, and long before that a paste just floods
+  " the prompt: hand over a file instead.
+  if len(context) >= 16384
+    let path = tempname()
+    call writefile(getline(a:first, a:last), path)
+    " No @: inlining a file this size would blow the context; let claude page it.
+    return printf("%s\n(the text of %s is in %s)", a:args, bufname(), path)
+  endif
   return printf("%s\n%s", a:args, context)
 endfunction
 

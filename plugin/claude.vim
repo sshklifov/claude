@@ -116,9 +116,10 @@ function! s:JumpTo(n, lnums)
   call cursor(lnum, matchend(getline(lnum), '\v^\s*\S\s*') + 1)
 endfunction
 
+" The TUI pads ⎿ with a non-breaking space, which \s doesn't match.
 let s:file_headers = [
       \ '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)',
-      \ '\v^\s*⎿\s+Updated\s+(\S+)',
+      \ '\v^\s*⎿[[:space:] ]+Updated\s+(\S+)',
       \ ]
 
 " Lines of the prompts you typed (TUI: `❯ text` at column 1, dup'd by redraws).

@@ -76,10 +76,7 @@ function! s:OpenClaudeTerm(args, root, ...)
   " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
   setlocal scrollback=100000
   nnoremap <buffer> <CR> <cmd>call <SID>ClaudeOpenRef()<CR>
-  nnoremap <buffer> ]p <cmd>call <SID>JumpTo(v:count1, <SID>PromptLines())<CR>
-  nnoremap <buffer> [p <cmd>call <SID>JumpTo(-v:count1, <SID>PromptLines())<CR>
-  nnoremap <buffer> [P <cmd>call <SID>JumpTo(-line('$'), <SID>PromptLines())<CR>
-  nnoremap <buffer> ]P <cmd>exe get(map(matchbufline('%','^❯',1,'$'),'v:val.lnum'),-1,'')<CR>
+  call s:MapPromptJumps()
   nnoremap <buffer> ]c <cmd>call <SID>JumpTo(v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> [c <cmd>call <SID>JumpTo(-v:count1, <SID>HunkLines())<CR>
   nnoremap <buffer> <C-l> <cmd>call <SID>TrimScrollback()<CR>
@@ -127,6 +124,14 @@ let s:file_headers = [
       \ '\v^\s*●\s+%(Update|Edit|MultiEdit|Write|Create|Read)\((.{-})\)',
       \ '\v^\s*⎿[[:space:] ]+Updated\s+(\S+)',
       \ ]
+
+" ]p/[p between your prompts, [P/]P to the first/last one.
+function! s:MapPromptJumps()
+  nnoremap <buffer> ]p <cmd>call <SID>JumpTo(v:count1, <SID>PromptLines())<CR>
+  nnoremap <buffer> [p <cmd>call <SID>JumpTo(-v:count1, <SID>PromptLines())<CR>
+  nnoremap <buffer> [P <cmd>call <SID>JumpTo(-line('$'), <SID>PromptLines())<CR>
+  nnoremap <buffer> ]P <cmd>exe get(map(matchbufline('%','^❯',1,'$'),'v:val.lnum'),-1,'')<CR>
+endfunction
 
 " Lines of the prompts you typed (TUI: `❯ text` at column 1, dup'd by redraws).
 function! s:PromptLines()
@@ -450,6 +455,7 @@ function! s:OnPreview(win, list, entry, data)
   keepjumps normal! G
   let b:claude_entry = a:entry
   nnoremap <buffer> <CR> <cmd>call <SID>ResumeSession(b:claude_entry)<CR>
+  call s:MapPromptJumps()
 endfunction
 
 function! s:OnResumeSession()

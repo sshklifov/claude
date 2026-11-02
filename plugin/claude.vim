@@ -48,8 +48,14 @@ function! s:CodingWin(root)
 endfunction
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
-function! s:OpenClaudeTerm(args, root)
-  call init#SmartSplit('below')
+" a:1 is an opts dict: new_window (default true), false opens it in this one.
+function! s:OpenClaudeTerm(args, root, ...)
+  let opts = get(a:000, 0, #{})
+  if get(opts, 'new_window', v:true)
+    call init#SmartSplit('below')
+  else
+    enew
+  endif
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
   call init#Termopen([g:claude_executable] + a:args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
@@ -344,6 +350,7 @@ highlight default link ClaudeResumeDir Directory
 highlight default link ClaudeResumeId Comment
 highlight default link ClaudeResumePrompt String
 highlight default link ClaudeResumeMatch Search
+highlight default link ClaudeResumeSeen Comment
 
 function! s:ClaudeResume(bang, ...)
   " No args: python lists one row per session (see claude_search.py).
@@ -391,13 +398,68 @@ function! s:OnSearchResults(needles, data)
         \ [printf(' [%s] ', f[0][:4]), 'ClaudeResumeId'],
         \ ] + s:MarkNeedles(f[4], a:needles)})
   let data = map(copy(fields), '#{id: v:val[0], cwd: v:val[1]}')
+  " One list at a time (with its previews); it outlives its window so a session
+  " can <C-o> back to it.
+  for b in getbufinfo()
+    if b.name =~# '\v(^|/)ClaudeResume$|^claude-preview://'
+      exe 'bwipeout ' .. b.bufnr
+    endif
+  endfor
   let nr = qutil#CreateCustomQuickfix(lines, "ClaudeResume", function('s:OnResumeSession'))
   call qutil#SetLineData(nr, data)
+  setlocal bufhidden=hide
+  nnoremap <buffer> p <cmd>call <SID>PreviewSession()<CR>
+endfunction
+
+" Read the session under the cursor in place of the list; <C-o> comes back.
+function! s:PreviewSession()
+  let entry = qutil#GetLineData()
+  call s:GraySession(entry.id)
+  call init#OnJobOutput(['python3', s:script, '--show', entry.id],
+        \ expand('<SID>') .. 'OnPreview', win_getid(), bufnr(), entry)
+endfunction
+
+" Gray out every row of session a:id in the list, so the search can move on.
+function! s:GraySession(id)
+  let list = bufnr('^ClaudeResume$')
+  let data = getbufvar(list, 'qutil_line_data', [])
+  let ns = nvim_create_namespace('ClaudeResumeSeen')
+  for i in filter(range(len(data)), 'data[v:val].id ==# a:id')
+    call nvim_buf_set_extmark(list, ns, i, 0,
+          \ #{id: i + 1, end_row: i + 1, hl_group: 'ClaudeResumeSeen', priority: 5000})
+  endfor
+endfunction
+
+function! s:OnPreview(win, list, entry, data)
+  " Moved on while python read it: leave the window be.
+  if winbufnr(a:win) != a:list
+    return
+  endif
+  if empty(join(a:data, ''))
+    return init#Warn("ClaudeResume: session %s has nothing to show", a:entry.id)
+  endif
+  " Hidden, not wiped, so <C-i> can come back to it.
+  let name = 'claude-preview://' .. a:entry.id
+  let nr = bufexists(name) ? bufnr(name) : init#CreateCustomBuffer(name, a:data)
+  call setbufvar(nr, '&bufhidden', 'hide')
+  call win_gotoid(a:win)
+  exe 'buffer ' .. nr
+  setlocal wrap linebreak
+  syntax match ClaudeResumePrompt /^❯.*/
+  " Where it left off says most about which session it was.
+  keepjumps normal! G
+  let b:claude_entry = a:entry
+  nnoremap <buffer> <CR> <cmd>call <SID>ResumeSession(b:claude_entry)<CR>
 endfunction
 
 function! s:OnResumeSession()
-  let entry = qutil#GetLineData()
+  call s:ResumeSession(qutil#GetLineData())
+endfunction
+
+function! s:ResumeSession(entry)
+  let entry = a:entry
   let id = entry.id
+  call s:GraySession(id)
   " Resume is scoped to a project dir, so it must run in the session's own cwd.
   let cwd = entry.cwd
   if empty(cwd) || !isdirectory(cwd)
@@ -405,8 +467,8 @@ function! s:OnResumeSession()
     return
   endif
 
-  quit
-  call s:OpenClaudeTerm(["--resume", id], cwd)
+  " In the list's own window: its jumplist is how <C-o> gets back here.
+  call s:OpenClaudeTerm(["--resume", id], cwd, #{new_window: v:false})
 endfunction
 
 command! -bang -nargs=* ClaudeResume call s:ClaudeResume("<bang>", <f-args>)

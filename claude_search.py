@@ -2,6 +2,7 @@
 """Substring-search across all Claude Code session history.
 
 Usage: claude_search.py [--human-readable] [--path DIR] [substring ...]
+       claude_search.py --show SID
   case-insensitive; ALL substrings must match the same message.
   With no substring: list one row per session (first user prompt as the
   snippet), ordered by most-recent activity.
@@ -70,6 +71,8 @@ parser.add_argument("--human-readable", action="store_true", dest="human",
                     help="pretty, ANSI-colored output (default is tab-separated for the editor)")
 parser.add_argument("--path", metavar="DIR",
                     help="only sessions whose cwd is DIR or a subdirectory of it")
+parser.add_argument("--show", metavar="SID",
+                    help="print that session's conversation instead")
 parser.add_argument("needles", nargs="*",
                     help="case-insensitive substrings; ALL must match the same message")
 opts = parser.parse_args()
@@ -77,6 +80,21 @@ opts = parser.parse_args()
 human = opts.human
 path_filter = opts.path
 needles = [n.lower() for n in opts.needles]
+
+if opts.show:
+    # The said text only, laid out like the TUI: `❯ prompt`, `● reply`.
+    for path in glob.glob(os.path.expanduser(f"~/.claude/projects/*/{opts.show}.jsonl")):
+        for d in messages(path):
+            m = d.get("message", {})
+            body = text_of(m).strip()
+            if d.get("isMeta") or d.get("isSidechain") or not body:
+                continue
+            first, *rest = body.splitlines()
+            print(("❯ " if m.get("role") == "user" else "● ") + first)
+            for line in rest:
+                print("  " + line)
+            print()
+    sys.exit(0)
 
 
 def under(cwd, root):

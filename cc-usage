@@ -213,6 +213,14 @@ BRIEF_NAMES = {
 }
 
 
+def window_name(r, names, scoped):
+    """r's name from names; a per-model weekly cap is named after its model."""
+    model = ((r.get("scope") or {}).get("model") or {}).get("display_name")
+    if r.get("kind") == "weekly_scoped" and model:
+        return scoped.format(model)
+    return names.get(r.get("kind"), r.get("kind") or "?")
+
+
 def bar(pct, width=28):
     pct = max(0, min(100, int(pct or 0)))
     fill = round(pct * width / 100)
@@ -406,7 +414,7 @@ def brief_limits(refresh=True):
             when = "stale" if rt < now else rel(rt, now)
         except (KeyError, TypeError, ValueError):
             pass
-        rows.append((BRIEF_NAMES.get(r.get("kind"), r.get("kind") or "?"),
+        rows.append((window_name(r, BRIEF_NAMES, "{}"),
                      int(r["percent"]), when))
     for name, pct, when in sorted(rows, key=lambda r: -r[1]):
         print(f"{name}\t{pct}\t{when}")
@@ -439,7 +447,7 @@ def show_limits(refresh=True):
     stale = False
     for r in limit_windows(u):
         pct = r["percent"]
-        name = KIND_NAMES.get(r.get("kind"), r.get("kind") or "?")
+        name = window_name(r, KIND_NAMES, "weekly ({})")
         note = ""
         ra = r.get("resets_at")
         if ra:

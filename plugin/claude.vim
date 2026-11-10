@@ -49,7 +49,8 @@ endfunction
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
 " a:1 is an opts dict: new_window (default true), false opens it in this one;
-" private (default false) leaves no transcript, prompt history or memory behind.
+" private (default false) leaves no transcript, prompt history or memory behind,
+" and sends no telemetry or error reports, nor anything to claude.ai.
 function! s:OpenClaudeTerm(args, root, ...)
   let opts = get(a:000, 0, #{})
   if get(opts, 'new_window', v:true)
@@ -61,14 +62,22 @@ function! s:OpenClaudeTerm(args, root, ...)
   let args = a:args[0] ==# '--resume' ? a:args : ['--session-id', s:Uuid()] + a:args
   " A later /clear or /resume starts another session: the hook tells us which.
   let hook = #{type: 'command', command: shellescape(s:session_hook)}
-  let settings = json_encode(#{hooks: #{SessionStart: [#{hooks: [hook]}]}})
+  let settings = #{hooks: #{SessionStart: [#{hooks: [hook]}]}}
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
   let env = #{CLAUDE_BUF: bufnr()}
   let private = get(opts, 'private', v:false)
   if private
-    call extend(env, #{CLAUDE_CODE_SKIP_PROMPT_HISTORY: 1, CLAUDE_CODE_DISABLE_AUTO_MEMORY: 1})
+    call extend(env, #{CLAUDE_CODE_SKIP_PROMPT_HISTORY: 1, CLAUDE_CODE_DISABLE_AUTO_MEMORY: 1,
+          \ DISABLE_TELEMETRY: 1, DISABLE_ERROR_REPORTING: 1})
+    " Explicitly, since an org or server default can turn these on: either
+    " would put the transcript on claude.ai.
+    call extend(settings, #{remoteControlAtStartup: v:false, autoUploadSessions: v:false})
+    " Turn away messages from other sessions, and send none to them. (It still
+    " shows up in their ListAgents: nothing turns that off.)
+    call extend(settings, #{crossSessionInbound: 'refuse',
+          \ permissions: #{deny: ['SendMessage', 'ListAgents']}})
   endif
-  call init#Termopen([g:claude_executable, '--settings', settings] + args,
+  call init#Termopen([g:claude_executable, '--settings', json_encode(settings)] + args,
         \ #{cwd: a:root, env: env, lock_mode: v:true})
   let b:root_dir = a:root
   let b:claude_private = private

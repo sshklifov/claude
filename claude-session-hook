@@ -1,0 +1,8 @@
+#!/bin/sh
+# SessionStart hook: tell the nvim we run in which session claude is on now, so
+# a /clear or an in-TUI /resume takes the statusline along. Its stdout would
+# become claude's context, so say nothing.
+[ -n "$NVIM" ] && [ -n "$CLAUDE_BUF" ] || exit 0
+id=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["session_id"])') || exit 0
+nvim --server "$NVIM" --remote-expr "claude#SetSession($CLAUDE_BUF, '$id')" >/dev/null 2>&1
+exit 0

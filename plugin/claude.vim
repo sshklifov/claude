@@ -58,8 +58,11 @@ function! s:OpenClaudeTerm(args, root, ...)
   endif
   " Name a new session ourselves, so its transcript is known before it exists.
   let args = a:args[0] ==# '--resume' ? a:args : ['--session-id', s:Uuid()] + a:args
+  " A later /clear or /resume starts another session: the hook tells us which.
+  let hook = #{type: 'command', command: shellescape(s:session_hook)}
+  let settings = json_encode(#{hooks: #{SessionStart: [#{hooks: [hook]}]}})
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
-  call init#Termopen([g:claude_executable] + args,
+  call init#Termopen([g:claude_executable, '--settings', settings] + args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
   let b:root_dir = a:root
   let b:claude_session_id = args[1]
@@ -89,6 +92,8 @@ function! s:Uuid()
   return printf('%08x-%04x-4%03x-%04x-%04x%08x', r[0], r[1] % 0x10000,
         \ r[1] / 0x10000 % 0x1000, 0x8000 + r[2] % 0x4000, r[2] / 0x10000, r[3])
 endfunction
+
+let s:session_hook = expand('<sfile>:p:h:h') .. '/claude-session-hook'
 
 " Scrollback isn't reflown on resize, so it tears. Trimming alone leaves the
 " torn rows that are still on the live screen, so first make claude repaint it
@@ -570,6 +575,18 @@ function! s:CheckCost()
   let b:claude_cost_at = localtime()
   let cmd = [s:cc_usage, '-c', b:root_dir, '--session-id', b:claude_session_id]
   call init#OnJobOutput(cmd, expand('<SID>') .. 'OnCost', bufnr())
+endfunction
+
+" Claude moved session a:bufnr to session a:id (see claude-session-hook): drop
+" the old one's figures and look the new one up.
+function! claude#SetSession(bufnr, id)
+  if getbufvar(a:bufnr, 'claude_session_id') ==# a:id
+    return
+  endif
+  call setbufvar(a:bufnr, 'claude_session_id', a:id)
+  call s:RunIn(a:bufnr, 'unlet! b:claude_cost_statusline b:claude_cost_at b:claude_model'
+        \ .. ' | call ' .. expand('<SID>') .. 'CheckCost()')
+  redrawstatus!
 endfunction
 
 function! s:OnCost(bufnr, data)

@@ -56,21 +56,13 @@ function! s:OpenClaudeTerm(args, root, ...)
   else
     enew
   endif
+  " Name a new session ourselves, so its transcript is known before it exists.
+  let args = a:args[0] ==# '--resume' ? a:args : ['--session-id', s:Uuid()] + a:args
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
-  call init#Termopen([g:claude_executable] + a:args,
+  call init#Termopen([g:claude_executable] + args,
         \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
   let b:root_dir = a:root
-  if a:args[0] ==# '--resume'
-    " Known outright: read that transcript directly instead of guessing.
-    let b:claude_session_id = a:args[1]
-  else
-    " Nothing written yet for a session that just started: show $0 rather
-    " than guess and risk picking up a sibling session's transcript in the
-    " same project. The first throttled check (see s:CheckCost) will have
-    " its own transcript to find by then.
-    let b:claude_cost_sl = ' [$0.00]'
-    let b:claude_cost_at = localtime()
-  endif
+  let b:claude_session_id = args[1]
   " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
   setlocal winfixwidth winfixheight
   " Keep a long session navigable; ]c pays ~35ms to scan this many lines.
@@ -83,13 +75,19 @@ function! s:OpenClaudeTerm(args, root, ...)
   " The plan limits, shared by all sessions, then this session's own cost and
   " model in the middle.
   setlocal statusline=%{%claude#Limits()%}%{claude#Middle()}
-  call s:CheckUsage()
   " Percentages rot, the 5-hour one fastest. Every prompt and every line claude
   " prints changes this buffer, so that is our "something happened" event.
   augroup ClaudeLimits
     exe printf('autocmd BufEnter,TextChangedT <buffer=%d> call s:CheckUsage()', bufnr())
   augroup END
   startinsert
+endfunction
+
+" A random (version 4) UUID.
+function! s:Uuid()
+  let r = map(range(4), 'rand()')
+  return printf('%08x-%04x-4%03x-%04x-%04x%08x', r[0], r[1] % 0x10000,
+        \ r[1] / 0x10000 % 0x1000, 0x8000 + r[2] % 0x4000, r[2] / 0x10000, r[3])
 endfunction
 
 " Scrollback isn't reflown on resize, so it tears. Trimming alone leaves the
@@ -531,7 +529,7 @@ endfunction
 " What this session has run up at API list prices; per buffer, unlike the
 " limits, so the statusline reads it off the terminal it is drawing.
 function! claude#Cost()
-  return get(b:, 'claude_cost_sl', '')
+  return get(b:, 'claude_cost_statusline', '')
 endfunction
 
 " Cost and model, padded out to the window's middle past what the limits took.
@@ -564,16 +562,13 @@ endfunction
 
 " Throttled per buffer, not account-wide: each session bills its own.
 function! s:CheckCost()
-  if localtime() - get(b:, 'claude_cost_at', 0) < s:limit_interval
+  " Until the first reply lands there is nothing to show: look again soon.
+  let interval = exists('b:claude_cost_statusline') ? s:limit_interval : 5
+  if localtime() - get(b:, 'claude_cost_at', 0) < interval
     return
   endif
   let b:claude_cost_at = localtime()
-  let cmd = [s:cc_usage, '-c', b:root_dir]
-  " Known outright for a resumed session; a fresh one is still guessed by
-  " last touched in this project (fine once it has actually been used).
-  if !empty(get(b:, 'claude_session_id', ''))
-    let cmd += ['--session-id', b:claude_session_id]
-  endif
+  let cmd = [s:cc_usage, '-c', b:root_dir, '--session-id', b:claude_session_id]
   call init#OnJobOutput(cmd, expand('<SID>') .. 'OnCost', bufnr())
 endfunction
 
@@ -582,7 +577,7 @@ function! s:OnCost(bufnr, data)
   if empty(cost)
     return
   endif
-  call setbufvar(a:bufnr, 'claude_cost_sl', printf(' [$%s]', cost))
+  call setbufvar(a:bufnr, 'claude_cost_statusline', printf(' [$%s]', cost))
   " A reply from before :ClaudeModel still has the old model.
   if str2nr(at) >= getbufvar(a:bufnr, 'claude_model_at', 0)
     call setbufvar(a:bufnr, 'claude_model', substitute(model, '^claude-', '', ''))

@@ -302,52 +302,6 @@ function! s:ClaudeInteractive(args) range
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)
-
-" The claude session here, else the first one shown in this tab, else -1.
-function! s:SessionBuf()
-  let bufs = [bufnr()] + tabpagebuflist()
-  call filter(bufs, 'getbufvar(v:val, "&buftype") ==# "terminal"
-        \ && !empty(getbufvar(v:val, "root_dir"))')
-  return get(bufs, 0, -1)
-endfunction
-
-" Model names as the statusline shows them; anything else goes through as is.
-let g:claude_models = get(g:, 'claude_models', {
-      \ 'haiku-5-5': 'claude-haiku-5-5', 'sonnet-5-5': 'claude-sonnet-5-5',
-      \ 'opus-5-5': 'claude-opus-5-5', 'fable-5-2': 'claude-fable-5-2'})
-
-" Switch the session at hand; claude's /model also saves it as the default.
-function! s:ClaudeModel(name)
-  let model = get(g:claude_models, a:name, a:name)
-  let buf = s:SessionBuf()
-  if buf < 0
-    " No session to run /model: save the default where it would have. Edit the
-    " text in place, since json_encode() would flatten the file to one line.
-    let path = expand('~/.claude/settings.json')
-    let text = filereadable(path) ? join(readfile(path), "\n") : "{\n}"
-    let entry = '"model": ' .. json_encode(model)
-    if text =~# '"model":\s*"[^"]*"'
-      let text = substitute(text, '"model":\s*"[^"]*"', '\=entry', '')
-    else
-      " First key, then drop the comma if it was the only one.
-      let text = substitute(text, '{', '\="{\n  " .. entry .. ","', '')
-      let text = substitute(text, ',\(\_s*}\)', '\1', '')
-    endif
-    call writefile(split(text, "\n", v:true), path)
-    return
-  endif
-  call chansend(getbufvar(buf, '&channel'), '/model ' .. model .. "\r")
-  " The transcript only learns of it with the next reply: show it till then.
-  call setbufvar(buf, 'claude_model', model)
-  call setbufvar(buf, 'claude_model_at', localtime())
-  redrawstatus!
-endfunction
-
-command! -nargs=1 -complete=customlist,s:CompleteModel ClaudeModel call s:ClaudeModel(<q-args>)
-
-function! s:CompleteModel(lead, ...)
-  return filter(sort(keys(g:claude_models)), 'v:val =~# "^" .. a:lead')
-endfunction
 " }}}
 
 """"""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{
@@ -591,15 +545,12 @@ function! claude#SetSession(bufnr, id)
 endfunction
 
 function! s:OnCost(bufnr, data)
-  let [cost, model, at] = split(get(a:data, 0, '') .. "\t\t", "\t", v:true)[:2]
+  let [cost, model] = split(get(a:data, 0, '') .. "\t", "\t", v:true)[:1]
   if empty(cost)
     return
   endif
   call setbufvar(a:bufnr, 'claude_cost_statusline', printf(' [$%s]', cost))
-  " A reply from before :ClaudeModel still has the old model.
-  if str2nr(at) >= getbufvar(a:bufnr, 'claude_model_at', 0)
-    call setbufvar(a:bufnr, 'claude_model', substitute(model, '^claude-', '', ''))
-  endif
+  call setbufvar(a:bufnr, 'claude_model', substitute(model, '^claude-', '', ''))
   redrawstatus!
 endfunction
 

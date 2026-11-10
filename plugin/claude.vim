@@ -311,9 +311,10 @@ function! s:SessionBuf()
   return get(bufs, 0, -1)
 endfunction
 
-" Plain names for claude's model aliases; anything else goes through as is.
-let g:claude_models = get(g:, 'claude_models', #{
-      \ cheap: 'haiku', fast: 'sonnet', smart: 'opus[1m]', smartest: 'fable'})
+" Model names as the statusline shows them; anything else goes through as is.
+let g:claude_models = get(g:, 'claude_models', {
+      \ 'haiku-5-5': 'claude-haiku-5-5', 'sonnet-5-5': 'claude-sonnet-5-5',
+      \ 'opus-5-5': 'claude-opus-5-5', 'fable-5-2': 'claude-fable-5-2'})
 
 " Switch the session at hand; claude's /model also saves it as the default.
 function! s:ClaudeModel(name)

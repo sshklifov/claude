@@ -48,7 +48,8 @@ function! s:CodingWin(root)
 endfunction
 
 " Open a claude terminal in a bottom split, wired for <CR> to open diff refs.
-" a:1 is an opts dict: new_window (default true), false opens it in this one.
+" a:1 is an opts dict: new_window (default true), false opens it in this one;
+" private (default false) leaves no transcript, prompt history or memory behind.
 function! s:OpenClaudeTerm(args, root, ...)
   let opts = get(a:000, 0, #{})
   if get(opts, 'new_window', v:true)
@@ -62,9 +63,15 @@ function! s:OpenClaudeTerm(args, root, ...)
   let hook = #{type: 'command', command: shellescape(s:session_hook)}
   let settings = json_encode(#{hooks: #{SessionStart: [#{hooks: [hook]}]}})
   " Claude gets its own buffer number, so claude#Api() can find b:root_dir.
+  let env = #{CLAUDE_BUF: bufnr()}
+  let private = get(opts, 'private', v:false)
+  if private
+    call extend(env, #{CLAUDE_CODE_SKIP_PROMPT_HISTORY: 1, CLAUDE_CODE_DISABLE_AUTO_MEMORY: 1})
+  endif
   call init#Termopen([g:claude_executable, '--settings', settings] + args,
-        \ #{cwd: a:root, env: #{CLAUDE_BUF: bufnr()}, lock_mode: v:true})
+        \ #{cwd: a:root, env: env, lock_mode: v:true})
   let b:root_dir = a:root
+  let b:claude_private = private
   let b:claude_session_id = args[1]
   " Resizing the pty reflows the TUI, tearing what it already drew: sit still.
   setlocal winfixwidth winfixheight
@@ -259,7 +266,7 @@ function! s:MakePrompt(args, root, first, last)
 endfunction
 
 " Write the prompt at leisure; :w sends it off, :q! throws it away.
-function! s:ClaudePromptBuffer(text, root)
+function! s:ClaudePromptBuffer(text, root, opts)
   " One draft at a time: its name is taken until it is sent or dropped.
   if win_gotoid(get(win_findbuf(bufnr('^claude-prompt$')), 0))
     return init#Warn("Claude: finish this prompt first (:w sends, :q! drops)")
@@ -267,7 +274,7 @@ function! s:ClaudePromptBuffer(text, root)
   call init#SmartSplit('below')
   call init#BufInput('claude-prompt', #{lines: split(a:text, "\n", v:true),
         \ msg: "Prompt not sent; do :w to send it, :q! to drop it"},
-        \ expand('<SID>') .. 'SendPrompt', a:root)
+        \ expand('<SID>') .. 'SendPrompt', a:root, a:opts)
   " Prose, not code: wrap for reading, and hard-wrap at 120 as you type so
   " no line grows wider than that regardless of window width. No 'a' in
   " formatoptions: it reflows the whole paragraph on every edit, pulling the
@@ -277,31 +284,37 @@ function! s:ClaudePromptBuffer(text, root)
 endfunction
 
 " :w sends and closes, so there is no second step to remember (empty: cancel).
-function! s:SendPrompt(root)
+function! s:SendPrompt(root, opts)
   let nr = bufnr()
   let text = trim(join(getline(1, '$'), "\n"))
   setlocal nomodified
   exe 'bwipeout ' .. nr
   if !empty(text)
     " We're still inside the write: open the terminal once it has settled.
-    call timer_start(0, {-> s:OpenClaudeTerm(['--', text], a:root)})
+    call timer_start(0, {-> s:OpenClaudeTerm(['--', text], a:root, a:opts)})
   endif
 endfunction
 
-function! s:ClaudeInteractive(args) range
+" a:1 is the opts dict for s:OpenClaudeTerm.
+function! s:ClaudeInteractive(args, ...) range
+  let opts = get(a:000, 0, #{})
   let root = FugitiveWorkTree()
   if empty(root)
     let root = getcwd()
   endif
   let text = s:MakePrompt(a:args, root, a:firstline, a:lastline)
   if empty(a:args)
-    return s:ClaudePromptBuffer(text, root)
+    return s:ClaudePromptBuffer(text, root, opts)
   endif
   " `--` ends the options: a prompt starting with `-` is still a prompt.
-  call s:OpenClaudeTerm(['--', text], root)
+  call s:OpenClaudeTerm(['--', text], root, opts)
 endfunction
 
 command! -nargs=* -range=% Claude <line1>,<line2>call s:ClaudeInteractive(<q-args>)
+" As :Claude, but nothing is kept: no transcript (so no resuming), no prompt
+" history, no auto memory.
+command! -nargs=* -range=% ClaudePrivate
+      \ <line1>,<line2>call s:ClaudeInteractive(<q-args>, #{private: v:true})
 " }}}
 
 """"""""""""""""""""""""""""Claude resume by history search"""""""""""""""""""""""""""" {{{
@@ -522,6 +535,10 @@ endfunction
 
 " Throttled per buffer, not account-wide: each session bills its own.
 function! s:CheckCost()
+  " No transcript to add up: don't poll for one forever.
+  if get(b:, 'claude_private', v:false)
+    return
+  endif
   " Until the first reply lands there is nothing to show: look again soon.
   let interval = exists('b:claude_cost_statusline') ? s:limit_interval : 5
   if localtime() - get(b:, 'claude_cost_at', 0) < interval

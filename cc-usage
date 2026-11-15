@@ -60,11 +60,26 @@ class Bucket:
         return self.inp + self.out + self.cr + self.cw5 + self.cw1h
 
 
-def price(model, fast):
-    tbl = FAST_PRICES if fast else PRICES
+def _lookup(tbl, model):
+    """model's entry: its own, else the longest key it is a version of
+    (claude-fable-5 prices claude-fable-5-2)."""
     if model in tbl:
         return tbl[model]
-    return PRICES.get(model) or (5.0, 25.0)  # unknown model -> assume opus tier
+    keys = [k for k in tbl if model.startswith(k + "-")]
+    return tbl[max(keys, key=len)] if keys else None
+
+
+def price(model, fast):
+    p = (fast and _lookup(FAST_PRICES, model)) or _lookup(PRICES, model)
+    if p:
+        return p
+    # A generation the table has not caught up with (claude-haiku-5-5): go by
+    # its family's newest entry, a guess that beats pricing haiku as opus.
+    family = "-".join(model.split("-")[:2]) + "-"
+    for k, v in PRICES.items():
+        if family != "-" and k.startswith(family):
+            return v
+    return (5.0, 25.0)  # unknown family -> assume opus tier
 
 
 def bucket_of(u, model):
